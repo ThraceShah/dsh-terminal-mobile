@@ -1,0 +1,72 @@
+{
+  "name": "@local/dsh-terminal-mobile",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Mobile-first replacement for the DSH web right-sidebar terminal screen: adjustable font size, a Termux-style extension key bar, and touch scrolling that belongs to the terminal.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "icon": "icon.svg",
+  "files": [
+    "index.js",
+    "client.js",
+    "client.*.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "docs/",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-terminal"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.56.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node test/load.mjs && node test/logic.mjs && node test/body.mjs",
+    "test:served": "node test/served.mjs",
+    "test:gui": "node test/geometry.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThraceShah/dsh-terminal-mobile.git"
+  },
+  "homepage": "https://github.com/ThraceShah/dsh-terminal-mobile#readme",
+  "bugs": {
+    "url": "https://github.com/ThraceShah/dsh-terminal-mobile/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "terminal",
+    "xterm",
+    "mobile",
+    "cordis",
+    "plugin"
+  ],
+  "author": "ThraceShah"
+}
