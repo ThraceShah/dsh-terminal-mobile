@@ -25,6 +25,14 @@ terminal package) at a lower slot priority, and adds what a phone needs:
 
 ## Install
 
+Install straight from this repository — no npm account or registry needed:
+
+```bash
+dsh plugin --profile web add github:ThraceShah/dsh-terminal-mobile
+```
+
+Or from a local clone:
+
 ```bash
 git clone https://github.com/ThraceShah/dsh-terminal-mobile.git
 dsh plugin --profile web add "$PWD/dsh-terminal-mobile"
@@ -41,6 +49,8 @@ about the terminal provider is modified.
 
 Installing needs `pnpm` on `PATH` (`dsh plugin` forwards to it). The build
 artifacts are committed, so installing does **not** run a build.
+
+The same spec works in the Web **Plugins → Add plugin** dialog.
 
 ## Develop
 
@@ -121,3 +131,16 @@ a DSH release that renames those would need a matching update here.
 ## License
 
 [MIT](LICENSE)
+
+## Plugin markets
+
+DSH has no single official marketplace with a submission queue. A *market* is a
+JSON index (format 1) that anyone can publish; a user adds its URL under
+**Plugins → Discover**, and DSH reads it with
+[`@deepseek-ai/dsh-plugin-market`](https://www.npmjs.com/package/@deepseek-ai/dsh-plugin-market).
+
+This package is ready to be listed: it declares `dsh.bundle`, `dsh.client`,
+`engines.dsh`, `icon` and `locale/*.json` display metadata, which is exactly what
+the format requires. See
+[`docs/MARKET.md`](docs/MARKET.md) for the fields an index entry needs and the
+two ways to publish (npm, or a commit-pinned Git source).
