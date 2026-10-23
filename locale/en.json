@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Terminal (Mobile)",
+    "description": "Mobile-first replacement for the sidebar terminal: adjustable font size, a Termux-style key bar, and touch scrolling that belongs to the terminal."
+  }
+}

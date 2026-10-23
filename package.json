@@ -1,7 +1,6 @@
 {
   "name": "@local/dsh-terminal-mobile",
   "version": "0.2.1",
-  "private": true,
   "description": "Mobile-first replacement for the DSH web right-sidebar terminal screen: adjustable font size, a Termux-style extension key bar, and touch scrolling that belongs to the terminal.",
   "type": "module",
   "main": "index.js",
@@ -12,10 +11,12 @@
     "./client": {
       "default": "./client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "icon": "icon.svg",
   "files": [
+    "locale/*.json",
     "index.js",
     "client.js",
     "client.*.js",
@@ -68,5 +69,8 @@
     "cordis",
     "plugin"
   ],
-  "author": "ThraceShah"
+  "author": "ThraceShah",
+  "engines": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  }
 }
