@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "@local/dsh-terminal-mobile",
+	id: "dsh-terminal-mobile",
 	chunk: "client.terminal-mobile.js",
 	factory: (require) => {
 		var module = { exports: {} };

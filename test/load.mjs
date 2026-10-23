@@ -13,7 +13,7 @@ const chunkSource = artifact('client.terminal-mobile.js')
 
 // ── artifact shape ────────────────────────────────────────────────────────────
 suite.check('entry wraps a ModuleLoader registration', entrySource.startsWith('window.__ModuleLoader__.load({'))
-suite.check('entry carries the package id', entrySource.includes('id: "@local/dsh-terminal-mobile"'))
+suite.check('entry carries the package id', entrySource.includes('id: "dsh-terminal-mobile"'))
 suite.check('entry has no chunk field', !entrySource.includes('chunk:'))
 suite.check('chunk wraps a ModuleLoader registration', chunkSource.startsWith('window.__ModuleLoader__.load({'))
 suite.check('chunk declares its filename', chunkSource.includes('chunk: "client.terminal-mobile.js"'))
@@ -58,7 +58,7 @@ const { registration, exports: entry } = execute(page, 'client.js', {
   chunks: { 'client.terminal-mobile.js': chunk },
 })
 
-suite.check('registration id is the package name', registration.id === '@local/dsh-terminal-mobile')
+suite.check('registration id is the package name', registration.id === 'dsh-terminal-mobile')
 suite.check('registration has no chunk', registration.chunk === undefined)
 suite.check('entry exports apply', typeof entry.apply === 'function')
 suite.check('entry exports inject', Array.isArray(entry.inject))

@@ -1,5 +1,5 @@
 /**
- * Build the two browser artifacts of `@local/dsh-terminal-mobile`.
+ * Build the two browser artifacts of `dsh-terminal-mobile`.
  *
  * The host's client-module system loads a package through ONE entry file
  * (`exports["./client"]`) and then serves package-local chunks from the SAME
@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 
 /** Package identity carried in the module registration. */
-const PACKAGE_ID = '@local/dsh-terminal-mobile'
+const PACKAGE_ID = 'dsh-terminal-mobile'
 
 /** Chunk filename; must match the host's CLIENT_CHUNK pattern. */
 const CHUNK_NAME = 'client.terminal-mobile.js'

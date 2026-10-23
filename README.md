@@ -33,7 +33,7 @@ dsh plugin --profile web add "$PWD/dsh-terminal-mobile"
 Refresh the running GUI (the profile's bundle list changed). Remove with:
 
 ```bash
-dsh plugin --profile web remove @local/dsh-terminal-mobile
+dsh plugin --profile web remove dsh-terminal-mobile
 ```
 
 The official terminal screen comes back as soon as the plugin is gone; nothing

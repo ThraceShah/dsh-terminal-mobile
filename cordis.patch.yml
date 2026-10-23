@@ -1,4 +1,4 @@
-# @local/dsh-terminal-mobile bundle layer.
+# dsh-terminal-mobile bundle layer.
 #
 # One row: the plugin's host half is an empty `apply()` that exists only so the
 # Loader has something to mount; the browser half ships through
@@ -7,4 +7,4 @@
 # for readability — the shadowing decision is the slot priority, not row order.
 - insert:
     - id: terminal-mobile
-      name: '@local/dsh-terminal-mobile'
+      name: 'dsh-terminal-mobile'

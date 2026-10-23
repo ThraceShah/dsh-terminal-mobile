@@ -1,5 +1,5 @@
 /**
- * Browser entry of `@local/dsh-terminal-mobile`.
+ * Browser entry of `dsh-terminal-mobile`.
  *
  * Two responsibilities:
  * 1. Shadow the official terminal screen for the SAME keyed cell the official

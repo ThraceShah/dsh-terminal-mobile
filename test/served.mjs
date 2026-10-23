@@ -20,7 +20,7 @@ if (baseUrl === undefined) {
 }
 
 const suite = createSuite('served')
-const PACKAGE_ID = '@local/dsh-terminal-mobile'
+const PACKAGE_ID = 'dsh-terminal-mobile'
 
 // ── authenticate exactly as a person opening the printed URL would ──────────
 // A running server's launch token is only printed at startup, so a check against
