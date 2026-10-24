@@ -12,7 +12,7 @@
  * real xterm are available.
  */
 import { createSuite } from './harness.mjs'
-import { LONG_PRESS_MS, LONG_PRESS_SLOP_PX, cellFromPoint, findRowByBufferRow, isCopyChipTouch, isWordCharacter, wordRangeAt, writeToClipboard } from '../src/selection.js'
+import { LONG_PRESS_MS, LONG_PRESS_SLOP_PX, cellFromPoint, findRowByBufferRow, isCopyChipTouch, isHandleTouch, isWordCharacter, wordRangeAt, writeToClipboard } from '../src/selection.js'
 
 const suite = createSuite('selection')
 
@@ -179,6 +179,21 @@ suite.check('the slop is small enough to feel like a hold', LONG_PRESS_SLOP_PX <
   suite.check('a press on the screen is not the chip', isCopyChipTouch({ target: screenTarget }) === false)
   suite.check('a target without closest is not the chip', isCopyChipTouch({ target: {} }) === false)
   suite.check('a missing target is not the chip', isCopyChipTouch({}) === false)
+}
+
+// ── telling a selection grip's press apart ──────────────────────────────────
+{
+  const gripTarget = { closest: (selector) => (selector === '[data-terminal-mobile-handle]' ? {} : null) }
+  suite.check('a press on a grip is recognised', isHandleTouch({ target: gripTarget }))
+  const screenTarget = { closest: () => null }
+  suite.check('a press on the screen is not a grip', isHandleTouch({ target: screenTarget }) === false)
+  // A grip is not a chip and a chip is not a grip: the screen treats a chip
+  // press as a copy and a grip press as an adjustment, so the two predicates
+  // must not agree on either target.
+  const chipTarget = { closest: (selector) => (selector === '[data-terminal-mobile-copy]' ? {} : null) }
+  suite.check('a chip press is not a grip press', isHandleTouch({ target: chipTarget }) === false)
+  suite.check('a target without closest is not a grip', isHandleTouch({ target: {} }) === false)
+  suite.check('a missing target is not a grip', isHandleTouch({}) === false)
 }
 
 // ── clipboard paths ─────────────────────────────────────────────────────────

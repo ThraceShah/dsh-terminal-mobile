@@ -135,7 +135,9 @@ var zh = {
   "key.space": "Space",
   "select.copy": "\u590D\u5236",
   "select.copied": "\u5DF2\u590D\u5236",
-  "select.copyFailed": "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u62E9"
+  "select.copyFailed": "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u62E9",
+  "select.handleStart": "\u8C03\u6574\u9009\u533A\u8D77\u70B9",
+  "select.handleEnd": "\u8C03\u6574\u9009\u533A\u7EC8\u70B9"
 };
 var en = {
   title: "Terminal",
@@ -229,7 +231,9 @@ var en = {
   "key.space": "Space",
   "select.copy": "Copy",
   "select.copied": "Copied",
-  "select.copyFailed": "Copy failed \u2014 select manually"
+  "select.copyFailed": "Copy failed \u2014 select manually",
+  "select.handleStart": "Adjust selection start",
+  "select.handleEnd": "Adjust selection end"
 };
 
 // src/ui-state.js

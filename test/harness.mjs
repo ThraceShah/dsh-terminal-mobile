@@ -199,9 +199,16 @@ export function createSuite(label) {
     console.error(`  ✗ ${label} / ${name}${detail === undefined ? '' : ` — ${detail}`}`)
     return false
   }
-  const equal = (name, actual, expected) => {
+  /**
+   * Assert two JSON-comparable values match.
+   *
+   * `detail` is shown only on failure: the expected and actual values are
+   * already reported, so it carries what the caller knows that they do not —
+   * which step of a sequence produced them.
+   */
+  const equal = (name, actual, expected, detail) => {
     const ok = JSON.stringify(actual) === JSON.stringify(expected)
-    return check(name, ok, ok ? undefined : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+    return check(name, ok, ok ? undefined : `${detail === undefined ? '' : `${detail}: `}expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
   }
   const finish = () => {
     const total = state.passed + state.failed

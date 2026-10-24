@@ -177,6 +177,46 @@ const CSS = `
   outline-offset: 1px;
 }
 
+/* Selection handles: the two grips that grow or shrink a long-press selection.
+   A finger's contact patch is roughly a 44px circle, so the visible dot is
+   deliberately much smaller than the target that receives the press. The dot
+   is centred on the cell it names, and the module positions the 44px box
+   around that centre, so nothing here offsets the dot.
+   The data-end attribute is set for styling and for the module's own
+   handler, which reads the end it is moving from that attribute. */
+.dsh-tm-handle {
+  position: absolute;
+  z-index: 7;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.dsh-tm-handle::after {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--dsw-alias-bg-base);
+  border-radius: 50%;
+  background: var(--dsw-alias-brand-primary);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+}
+.dsh-tm-handle:active { cursor: grabbing; }
+.dsh-tm-handle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 0;
+}
+
 .dsh-tm-keybar {
   display: flex;
   flex: none;

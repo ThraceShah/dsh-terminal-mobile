@@ -277,6 +277,22 @@ export function isCopyChipTouch(event) {
 }
 
 /**
+ * Whether a touch landed on a selection grip.
+ *
+ * The grips live inside the screen host for the same reason the chip does, and
+ * need the same exemption: the capture-phase listeners run first, so a grip
+ * press they consumed would never reach the grip's own handlers — and because
+ * a press on the screen retires the selection, an unguarded grip would dismiss
+ * the selection it is meant to adjust.
+ * @param {{target?: {closest?: (selector: string) => unknown}}} event
+ * @returns {boolean}
+ */
+export function isHandleTouch(event) {
+  const target = event.target
+  return typeof target?.closest === 'function' && target.closest('[data-terminal-mobile-handle]') !== null
+}
+
+/**
  * Put text on the clipboard, across the contexts DSH web actually runs in.
  *
  * The async clipboard API only exists in a secure context, and DSH web is
@@ -326,7 +342,7 @@ export async function writeToClipboard(text, env) {
  * @param {HTMLElement} options.node - the screen host that owns the gestures.
  * @param {import('@xterm/xterm').Terminal} options.emulator - the opened emulator.
  * @param {{selecting: boolean}} options.gesture - shared flag read by `installScrollOwnership`.
- * @param {() => {copy: string, copied: string, copyFailed: string}} options.labels - current-locale chip copy.
+ * @param {() => {copy: string, copied: string, copyFailed: string, handleStart: string, handleEnd: string}} options.labels - current-locale chip and grip copy.
  * @returns {{dispose: () => void}}
  */
 export function installLongPressCopy(options) {
@@ -334,8 +350,37 @@ export function installLongPressCopy(options) {
   let timer = 0
   let feedbackTimer = 0
   let chip
-  /** Anchor of the current selection: the word the finger first held. */
-  let anchor
+  /**
+   * The current selection, as its two ends in buffer coordinates.
+   *
+   * `start` is the anchor — the cell the finger first held, and the cell the
+   * grips move away from — and `end` is the exclusive far edge. One range rather
+   * than a word plus a direction is what lets a grip cross its own anchor: drag
+   * the left grip past the right one and the two ends swap, which is the
+   * behaviour a phone user already knows from native text selection.
+   */
+  let range
+  /** The grips, in the order `['start', 'end']`, or `undefined` while hidden. */
+  let handles
+  /** Which end a grip is moving while its pointer is down, else `undefined`. */
+  let handleDrag
+
+  /** Whether there is a selection to adjust or copy. */
+  const hasSelection = () => range !== undefined
+
+  /**
+   * The column the selection actually ends on.
+   *
+   * `end` is exclusive, so a selection that has shrunk to nothing still needs
+   * one cell to draw and to name: an exclusive end that sits on the same column
+   * as `start` would select nothing at all, and a grip placed there would be
+   * unmovable. The clamp lives here rather than at each call site because both
+   * the grips and the highlight read it.
+   *
+   * @param {{start: {column: number}, end: {column: number}}} selection
+   * @returns {number} an inclusive column inside `selection.start`'s row.
+   */
+  const endColumnOf = (selection) => Math.max(selection.end.column, selection.start.column + 1)
 
   const clearTimer = () => {
     if (timer !== 0) {
@@ -366,23 +411,23 @@ export function installLongPressCopy(options) {
     chip = undefined
   }
 
+  /** Hide the grips without touching the highlight: a copy does not end a selection. */
+  const removeHandles = () => {
+    if (handles === undefined) return
+    for (const handle of handles) handle.remove()
+    handles = undefined
+  }
+
   const dismiss = () => {
     clearFeedback()
     try {
       emulator.clearSelection()
     } catch {
-      /* A disposed emulator throws; the chip still goes away. */
+      /* A disposed emulator throws; the chrome still goes away. */
     }
     removeChip()
-    anchor = undefined
-  }
-
-  /** The cell the selection visually starts at, for chip placement. */
-  const selectionStartOf = (current) => {
-    if (current.bufferRow === anchor.bufferRow) {
-      return { column: Math.min(anchor.column, current.column), bufferRow: anchor.bufferRow }
-    }
-    return { column: 0, bufferRow: Math.min(anchor.bufferRow, current.bufferRow) }
+    removeHandles()
+    range = undefined
   }
 
   const showChip = (text) => {
@@ -398,36 +443,157 @@ export function installLongPressCopy(options) {
   }
 
   /**
+   * The client-space edges of the screen host, plus the grid's own left edge.
+   *
+   * Both the chip and the grips are positioned from this one measurement, so a
+   * grip lands exactly on the boundary between two cells and cannot drift away
+   * from the column the hit-test named.
+   *
+   * `left` is the host's edge and `gridLeft` the text's: the host carries
+   * padding, and a column index counts from the text. `cellWidth` is a fallback
+   * for a terminal that ships no measure probe, and is the less accurate of the
+   * two — see `measureCellWidth`.
+   *
+   * @returns {{left: number, gridLeft: number, top: number, width: number, cellWidth: number} | undefined}
+   */
+  const hostGeometry = () => {
+    const rows = node.querySelector('.xterm-rows')
+    if (rows === null || rows.childElementCount === 0) return undefined
+    const gridBox = screenBox(rows, node)
+    if (gridBox === undefined) return undefined
+    const hostBox = node.getBoundingClientRect()
+    if (hostBox.width <= 0) return undefined
+    return {
+      left: hostBox.left,
+      gridLeft: gridBox.left,
+      top: hostBox.top,
+      width: hostBox.width,
+      cellWidth: gridBox.width / emulator.cols,
+    }
+  }
+
+  /**
+   * The exact width of one cell, in CSS pixels.
+   *
+   * Dividing the grid's width by the column count is wrong by an amount that
+   * grows with the column, and this build of xterm makes the wrongness easy to
+   * measure: it rounds the canvas width to a whole pixel and then divides that
+   * rounded number by the column count to publish `cell.width`. Here the grid
+   * is 352px over 45 columns — 7.822px — while the glyphs actually advance
+   * 7.859px, so a grip placed at the last column lands a whole cell short of
+   * the glyph it names.
+   *
+   * xterm keeps a hidden probe holding 32 M's, and dividing its width by 32 is
+   * the obvious fix. It is subtly wrong too: the probe omits the `letter-spacing`
+   * the rows carry, so it under-reports by roughly one pixel over thirty
+   * columns and drifts a whole cell by the end of a normal command line.
+   *
+   * The rows carry the truth, and `pitchFromRow` reads it. This is only the
+   * fallback for a row with fewer than two glyphs — a freshly cleared screen,
+   * or a terminal that has not painted yet — where there is no pitch to read
+   * and the probe's small error is the better of the two.
+   *
+   * @param {HTMLElement} row - the row a grip is being placed on.
+   * @returns {number | undefined} the cell pitch, or `undefined` before layout.
+   */
+  const measureCellWidth = (row) => {
+    const fromRow = pitchFromRow(row)
+    if (fromRow !== undefined) return fromRow
+    const probe = node.querySelector('.xterm-char-measure-element')
+    if (probe === null) return undefined
+    const text = probe.textContent ?? ''
+    const width = probe.getBoundingClientRect().width
+    // Guard the divisor rather than the division: a probe that has not been
+    // populated yet reports a plausible-looking zero.
+    if (text.length === 0 || width <= 0) return undefined
+    return width / text.length
+  }
+
+  /**
+   * The distance between two neighbouring glyphs in a row.
+   *
+   * A Range per character is the only way to read a cell's box: a row is one
+   * text node, so `textContent` gives no boxes at all. The first glyph with a
+   * box after the first glyph is the pitch — its left edge minus its
+   * neighbour's — which is the same measurement the browser suite uses.
+   *
+   * @param {HTMLElement} row
+   * @returns {number | undefined} the cell pitch, or `undefined` for a row of one glyph.
+   */
+  const pitchFromRow = (row) => {
+    if (row === undefined || row === null) return undefined
+    const walker = row.ownerDocument.createTreeWalker(row, 4 /* NodeFilter.SHOW_TEXT */)
+    let previous
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = node.textContent ?? ''
+      if (text.length === 0) continue
+      const range = row.ownerDocument.createRange()
+      range.selectNodeContents(node)
+      for (let offset = 0; offset < text.length; offset += 1) {
+        range.setStart(node, offset)
+        range.setEnd(node, offset + 1)
+        const box = range.getBoundingClientRect()
+        if (box.width <= 0) continue
+        if (previous !== undefined && box.left > previous.left) {
+          const pitch = box.left - previous.left
+          range.detach()
+          return pitch
+        }
+        previous = box
+      }
+      range.detach()
+    }
+    return undefined
+  }
+
+  /**
+   * The pixel box of a buffer row, in host coordinates.
+   *
+   * `undefined` when the row is scrolled out of view, which is the one case a
+   * grip cannot be drawn for: it would have to name a column on a row that is
+   * not on screen.
+   *
+   * @param {number} bufferRow
+   * @returns {{left: number, top: number, width: number, height: number} | undefined}
+   */
+  const rowBoxOf = (bufferRow) => {
+    const geometry = hostGeometry()
+    if (geometry === undefined) return undefined
+    const rows = node.querySelector('.xterm-rows')
+    const row = findRowByBufferRow(rows, bufferRow, ydisp())
+    if (row === undefined) return undefined
+    const rowBox = row.getBoundingClientRect()
+    const cellWidth = measureCellWidth(row) ?? geometry.cellWidth
+    return {
+      // The grid is inset by the host's padding, and a column index is an
+      // offset from the grid — not from the host. Anchoring at zero put every
+      // column a padding-width to the left of the glyph it names.
+      left: geometry.gridLeft - geometry.left,
+      top: rowBox.top - geometry.top,
+      width: geometry.width,
+      height: rowBox.height,
+      cellWidth,
+    }
+  }
+
+  /**
    * Place the chip over `cell`, falling back to the anchor when it scrolls off.
    *
-   * The row is found by inverting the hit-test's own mapping — `bufferRow -
-   * ydisp`, not an attribute — and the column by measuring the row's text, so
-   * the chip lands on the row the selection is actually on rather than near it.
+   * The row comes from inverting the hit-test's own mapping — `bufferRow -
+   * ydisp`, not an attribute — so the chip lands on the row the selection is
+   * actually on rather than near it.
    */
   const placeChip = (cell) => {
-    const rows = node.querySelector('.xterm-rows')
-    if (rows === null || rows.childElementCount === 0) return
-    const hostBox = node.getBoundingClientRect()
-    const row = findRowByBufferRow(rows, cell.bufferRow, ydisp())
-    const gridBox = screenBox(rows, node)
-    const chipBox = chip.getBoundingClientRect()
+    const box = rowBoxOf(cell.bufferRow)
     const margin = 4
-    if (row !== undefined && gridBox !== undefined) {
-      const cellWidth = gridBox.width / emulator.cols
-      const x = gridBox.left - hostBox.left + (cell.column + 0.5) * cellWidth
-      chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(hostBox.width - chipBox.width - margin, margin)))}px`
-    } else {
-      chip.style.left = `${margin}px`
-    }
-    if (row === undefined) {
-      // The anchored row is out of view; pin the chip to the top edge rather
-      // than let it float over unrelated output.
-      chip.style.top = `${margin}px`
-      return
-    }
-    const rowBox = row.getBoundingClientRect()
-    const above = rowBox.top - hostBox.top - chipBox.height - 6
-    chip.style.top = `${Math.round(above >= 0 ? above : rowBox.bottom - hostBox.top + 6)}px`
+    if (box === undefined || chip === undefined) return
+    const chipBox = chip.getBoundingClientRect()
+    const x = box.left + (cell.column + 0.5) * box.cellWidth
+    chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(node.clientWidth - chipBox.width - margin, margin)))}px`
+    // Above the row when there is room, below it otherwise: a selection on the
+    // first visible row would push the chip off the top of the screen.
+    const above = box.top - chipBox.height - 6
+    chip.style.top = `${Math.round(above >= 0 ? above : box.top + box.height + 6)}px`
   }
 
   const copySelection = async () => {
@@ -438,16 +604,172 @@ export function installLongPressCopy(options) {
     if (text === '') return
     const ok = await writeToClipboard(text)
     const strings = labels()
-    // The clipboard write awaits, so the anchor can go away under us: a
+    // The clipboard write awaits, so the selection can go away under us: a
     // dismissed selection must not resurrect a chip with a stale position.
-    if (anchor === undefined) return
+    if (!hasSelection()) return
     showChip(ok ? strings.copied : strings.copyFailed)
-    placeChip({ column: anchor.column, bufferRow: anchor.bufferRow })
+    placeChip(range.start)
     clearFeedback()
     feedbackTimer = setTimeout(() => {
       feedbackTimer = 0
       dismiss()
     }, FEEDBACK_MS)
+  }
+
+  /**
+   * The cell a grip at `column` on `bufferRow` would name, clamped to the row.
+   *
+   * A grip's dot is drawn half a cell wide of its own edge, so a finger that
+   * lands past the last column of a row still resolves to that column rather
+   * than to nothing.
+   *
+   * @param {number} column
+   * @param {number} bufferRow
+   * @returns {{column: number, bufferRow: number}}
+   */
+  const gripCell = (column, bufferRow) => ({
+    column: Math.min(Math.max(column, 0), Math.max(emulator.cols - 1, 0)),
+    bufferRow,
+  })
+
+  /**
+   * Move one end of the selection to the cell under the finger.
+   *
+   * Same row keeps the columns; a different row re-selects whole lines, because
+   * a grip names one cell and cannot express a diagonal. The untouched end is
+   * the anchor, so the highlight always grows away from where the finger first
+   * held.
+   *
+   * @param {'start' | 'end'} end - which end the grip is moving.
+   * @param {{column: number, bufferRow: number}} current - the cell under the finger.
+   */
+  const moveTo = (end, current) => {
+    if (range === undefined) return
+    const other = end === 'start' ? range.end : range.start
+    try {
+      if (current.bufferRow === other.bufferRow) {
+        // One row: the grip is column-precise, and the untouched end is the
+        // anchor, so the highlight grows away from where the finger first held.
+        const column = gripCell(current.column, current.bufferRow).column
+        const edge = Math.max(column, other.column) + 1
+        const from = end === 'start' ? column : other.column
+        range =
+          end === 'start'
+            ? { start: { column, bufferRow: other.bufferRow }, end: { column: edge, bufferRow: other.bufferRow } }
+            : { start: { column: other.column, bufferRow: other.bufferRow }, end: { column: edge, bufferRow: other.bufferRow } }
+        emulator.select(from, other.bufferRow, edge - from)
+      } else {
+        // A different row: a grip names one cell and cannot express a diagonal,
+        // so the selection becomes the whole lines the two ends sit on.
+        const first = Math.min(current.bufferRow, other.bufferRow)
+        const last = Math.max(current.bufferRow, other.bufferRow)
+        range = { start: { column: 0, bufferRow: first }, end: { column: emulator.cols, bufferRow: last } }
+        emulator.selectLines(first, last)
+      }
+    } catch {
+      return
+    }
+    placeChip(range.start)
+    placeHandles()
+  }
+
+  /**
+   * A grip press claims the gesture.
+   *
+   * `pointerdown`, not `click`, and the capture-phase screen listeners are
+   * cancelled here: they run before the target's own handlers, so a grip press
+   * they saw first would be read as a tap that dismisses the very selection the
+   * grip is meant to adjust.
+   */
+  const onHandlePress = (event) => {
+    const handle = event.currentTarget
+    const end = handle.getAttribute('data-terminal-mobile-handle') === 'end' ? 'end' : 'start'
+    event.preventDefault()
+    event.stopPropagation()
+    if (!hasSelection()) return
+    handleDrag = end
+    gesture.selecting = true
+    handle.setPointerCapture?.(event.pointerId)
+    const move = (moveEvent) => {
+      if (handleDrag === undefined) return
+      if (moveEvent.cancelable) moveEvent.preventDefault()
+      moveEvent.stopPropagation()
+      const current = cellFromPoint(node, emulator.cols, moveEvent.clientX, moveEvent.clientY, ydisp())
+      if (current !== undefined) moveTo(handleDrag, current)
+    }
+    const finish = () => {
+      handleDrag = undefined
+      gesture.selecting = false
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', finish)
+      handle.removeEventListener('pointercancel', finish)
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', finish)
+    handle.addEventListener('pointercancel', finish)
+  }
+
+  /**
+   * Show the two grips at the ends of the current selection.
+   *
+   * The grips live beside the chip, not inside it: copying and adjusting are
+   * different gestures, and one control doing both means a press meant to copy
+   * lands on the wrong thing once the selection moves under the finger.
+   *
+   * Each grip is a 44px box whose visible dot sits at a cell edge, so the press
+   * target is a finger-sized area centred on a 10px mark.
+   */
+  const showHandles = () => {
+    if (range === undefined) return
+    if (handles === undefined) {
+      // One label per end, so a screen reader names the edge it is moving
+      // rather than announcing two identical grips.
+      handles = [
+        { end: 'start', label: labels().handleStart },
+        { end: 'end', label: labels().handleEnd },
+      ].map(({ end, label }) => {
+        const handle = document.createElement('button')
+        handle.type = 'button'
+        handle.className = 'dsh-tm-handle'
+        handle.setAttribute('data-terminal-mobile-handle', end)
+        handle.setAttribute('aria-label', label)
+        handle.addEventListener('pointerdown', onHandlePress)
+        node.appendChild(handle)
+        return handle
+      })
+    }
+    placeHandles()
+  }
+
+  const placeHandles = () => {
+    if (range === undefined || handles === undefined) return
+    const ends = [range.start, range.end]
+    for (let index = 0; index < handles.length; index += 1) {
+      const handle = handles[index]
+      const box = rowBoxOf(ends[index].bufferRow)
+      if (box === undefined) {
+        // The end is scrolled off; park the grip out of the way rather than
+        // leave it floating over unrelated output.
+        handle.style.left = '-9999px'
+        handle.style.top = '-9999px'
+        handle.setAttribute('aria-hidden', 'true')
+        continue
+      }
+      handle.removeAttribute('aria-hidden')
+      // Both offsets are relative to the HOST, which carries padding the grid
+      // does not: `box.left` is the grid's inset from the host edge, and the
+      // grip box is 44px wide with its dot centred at 22px. The half-cell puts
+      // the dot on the cell's centre, where a finger expects the grip — an edge
+      // leaves the dot half on the neighbouring cell and misreads as a grip for
+      // a cell the selection does not cover.
+      //
+      // `range.end` is exclusive, so it already names the cell after the last
+      // selected one, and `endColumnOf` clamps a shrunk-to-nothing selection
+      // back to a cell a grip can still hold and widen.
+      const column = index === 0 ? ends[index].column : endColumnOf(range)
+      handle.style.left = `${Math.round(box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth - 22)}px`
+      handle.style.top = `${Math.round(box.top - 10)}px`
+    }
   }
 
   const onChipPress = (event) => {
@@ -491,6 +813,12 @@ export function installLongPressCopy(options) {
     return typeof typed.ydisp === 'number' ? typed.ydisp : buffer.baseY
   }
 
+  /**
+   * Select the word under the finger and put the chip and grips around it.
+   *
+   * The word is the default the grips then adjust, so this is the one place a
+   * selection is created rather than moved.
+   */
   const fireLongPress = (touch) => {
     lastSkip = undefined
     node.removeAttribute('data-terminal-mobile-select-skip')
@@ -499,36 +827,22 @@ export function installLongPressCopy(options) {
     const bufferRow = cell.bufferRow
     const line = lineAt(bufferRow)
     if (line === undefined) return skip('line')
-    const range = wordRangeAt(line, cell.column)
-    if (range === undefined) return skip('word')
+    const word = wordRangeAt(line, cell.column)
+    if (word === undefined) return skip('word')
     try {
-      emulator.select(range.start, bufferRow, range.end - range.start)
+      emulator.select(word.start, bufferRow, word.end - word.start)
     } catch (error) {
       return skip(`select:${String(error && error.message)}`)
     }
-    anchor = { column: range.start, end: range.end, bufferRow }
+    range = {
+      start: { column: word.start, bufferRow },
+      // Exclusive, so a one-character word ends on the next column.
+      end: { column: word.end, bufferRow },
+    }
     gesture.selecting = true
     showChip(labels().copy)
-    placeChip({ column: range.start, bufferRow })
-  }
-
-  const extendTo = (clientX, clientY) => {
-    const current = cellFromPoint(node, emulator.cols, clientX, clientY, ydisp())
-    if (current === undefined) return
-    const bufferRow = current.bufferRow
-    try {
-      if (bufferRow === anchor.bufferRow) {
-        const column = Math.min(Math.max(current.column, 0), emulator.cols - 1)
-        const start = Math.min(anchor.column, column)
-        const end = Math.max(anchor.end, column + 1)
-        emulator.select(start, anchor.bufferRow, end - start)
-      } else {
-        emulator.selectLines(Math.min(anchor.bufferRow, bufferRow), Math.max(anchor.bufferRow, bufferRow))
-      }
-    } catch {
-      return
-    }
-    placeChip(selectionStartOf({ column: current.column, bufferRow }))
+    placeChip(range.start)
+    showHandles()
   }
 
   let start
@@ -548,6 +862,7 @@ export function installLongPressCopy(options) {
 
   const onTouchStart = (event) => {
     if (isCopyChipTouch(event)) return
+    if (isHandleTouch(event)) return
     clearTimer()
     start = undefined
     dragging = false
@@ -570,6 +885,7 @@ export function installLongPressCopy(options) {
 
   const onTouchMove = (event) => {
     if (isCopyChipTouch(event)) return
+    if (isHandleTouch(event)) return
     if (event.touches.length !== 1) {
       clearTimer()
       start = undefined
@@ -586,7 +902,8 @@ export function installLongPressCopy(options) {
     // The gesture is claimed: keep the scroll module and the page out of it.
     if (event.cancelable) event.preventDefault()
     event.stopPropagation()
-    if (anchor !== undefined) extendTo(touch.clientX, touch.clientY)
+    const current = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp())
+    if (current !== undefined) moveTo('end', current)
   }
 
   const onTouchEnd = () => {
@@ -611,6 +928,7 @@ export function installLongPressCopy(options) {
       clearFeedback()
       gesture.selecting = false
       removeChip()
+      removeHandles()
       node.removeEventListener('touchstart', onTouchStart, { capture: true })
       node.removeEventListener('touchmove', onTouchMove, { capture: true })
       node.removeEventListener('touchend', onTouchEnd, { capture: true })

@@ -107,6 +107,8 @@ export const zh = {
   'select.copy': '复制',
   'select.copied': '已复制',
   'select.copyFailed': '复制失败，请手动选择',
+  'select.handleStart': '调整选区起点',
+  'select.handleEnd': '调整选区终点',
 }
 
 /** English copy. */
@@ -203,4 +205,6 @@ export const en = {
   'select.copy': 'Copy',
   'select.copied': 'Copied',
   'select.copyFailed': 'Copy failed — select manually',
+  'select.handleStart': 'Adjust selection start',
+  'select.handleEnd': 'Adjust selection end',
 }

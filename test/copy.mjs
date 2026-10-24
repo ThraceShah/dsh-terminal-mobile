@@ -67,6 +67,7 @@ try {
       let column = 0
       let start
       let advance
+      let finish
       for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
         const value = node.textContent ?? ''
         if (value.length === 0) continue
@@ -79,6 +80,12 @@ try {
           if (column + offset === at && start === undefined) {
             start = { left: box.left, width: box.width, top: box.top, height: box.height }
           }
+          // The word's last glyph, in client space: the grips are checked
+          // against this rather than against `startLeft + n * pitch`, which
+          // stops working the moment the word wraps to a second row.
+          if (column + offset === at + marker.length - 1 && box.width > 0) {
+            finish = { left: box.left, right: box.left + box.width }
+          }
           if (start !== undefined && advance === undefined && box.width > 0) {
             advance = box.left + box.width - start.left
           }
@@ -87,7 +94,10 @@ try {
         column += value.length
       }
       if (start === undefined || advance === undefined || advance <= 0) return undefined
-      return { startLeft: start.left, advance, rowTop: start.top, rowHeight: start.height }
+      // `advance` spans one glyph's left edge to the next glyph's left edge, so
+      // it already includes the inter-glyph gap and IS the cell pitch. One
+      // measurement, used for both aims.
+      return { startLeft: start.left, pitch: advance, rowTop: start.top, rowHeight: start.height, finish }
     }
     return undefined
   }, MARKER)
@@ -96,7 +106,7 @@ try {
 
   // A point `columnOffset` columns into the marker, centred on its glyph.
   const pointFor = (columnOffset) => ({
-    x: target.startLeft + (columnOffset + 0.5) * target.advance,
+    x: target.startLeft + (columnOffset + 0.5) * target.pitch,
     y: target.rowTop + target.rowHeight / 2,
   })
 
@@ -200,12 +210,122 @@ try {
   await page.evaluate(([b]) => window.__tmDispatch('touchend', b.x, b.y), [dragEnd])
   await page.waitForTimeout(200)
 
-  // A dismissed selection must not leave a stale chip behind.
+  // A dismissed selection must not leave a stale chip or a pair of orphaned
+  // grips behind: the grips are the only way to adjust, so a grip that outlives
+  // its selection would adjust nothing and trap the next tap.
   await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y + 400), [dragStart])
   await page.evaluate(([p]) => window.__tmDispatch('touchend', p.x, p.y + 400), [dragStart])
   await page.waitForTimeout(200)
-  const cleared = await page.evaluate(() => document.querySelector('[data-terminal-mobile-copy]') === null)
-  suite.check('a fresh press retires the chip', cleared)
+  const cleared = await page.evaluate(() => ({
+    chip: document.querySelector('[data-terminal-mobile-copy]') !== null,
+    grips: document.querySelectorAll('[data-terminal-mobile-handle]').length,
+  }))
+  suite.check('a fresh press retires the chip', cleared.chip === false, JSON.stringify(cleared))
+  suite.equal('a fresh press retires the grips too', cleared.grips, 0)
+
+  // ── the grips appear with the selection and name their own end ────────────
+  await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y), [holdPoint])
+  await page.waitForTimeout(700)
+  await page.evaluate(([p]) => window.__tmDispatch('touchend', p.x, p.y), [holdPoint])
+  await page.waitForTimeout(200)
+
+  const grips = await page.evaluate((labels) => {
+    const nodes = [...document.querySelectorAll('[data-terminal-mobile-handle]')]
+    return nodes.map((node) => ({
+      end: node.getAttribute('data-terminal-mobile-handle'),
+      aria: node.getAttribute('aria-label'),
+      box: node.getBoundingClientRect(),
+      hidden: node.getAttribute('aria-hidden'),
+    }))
+  }, [en['select.handleStart'], zh['select.handleStart'], en['select.handleEnd'], zh['select.handleEnd']])
+  suite.check('a selection shows exactly two grips', grips.length === 2, JSON.stringify(grips.map((grip) => grip.end)))
+  suite.check('the grips are named for their own end', JSON.stringify(grips.map((grip) => grip.end)) === JSON.stringify(['start', 'end']), JSON.stringify(grips.map((grip) => grip.end)))
+  // The label is read from the locale module rather than spelled here, for the
+  // same reason the chip's copy is.
+  const gripLabels = new Set([en['select.handleStart'], zh['select.handleStart']])
+  const endLabels = new Set([en['select.handleEnd'], zh['select.handleEnd']])
+  suite.check('the start grip is labelled for screen readers', gripLabels.has(grips[0]?.aria), JSON.stringify(grips[0]?.aria))
+  suite.check('the end grip is labelled for screen readers', endLabels.has(grips[1]?.aria), JSON.stringify(grips[1]?.aria))
+  // A 44px target is the floor for a finger; the dot inside it is the only part
+  // that is drawn, so the grip must be reachable without landing on a neighbour.
+  for (const grip of grips) {
+    suite.check(`the ${grip.end} grip is finger-sized`, grip.box.width >= 44 && grip.box.height >= 44, JSON.stringify(grip.box))
+  }
+  // The grips flank the selected word, and both marks are measured against the
+  // glyphs the module actually selected rather than against
+  // `startLeft + n * pitch`.
+  //
+  // That arithmetic only holds while the word stays on one row. On a phone the
+  // screen is ~44 columns, so `echo SELECTME` wraps and the word begins at
+  // column 0 of the next row; `startLeft + 8 * pitch` then lands one cell past
+  // the row's end, and the assertion fails against a placement that is exact.
+  // Measuring the word's own first and last glyph keeps the check honest at
+  // any width.
+  const dotOf = (grip) => grip.box.left + 17 + 5
+  suite.check('the marker reports its own last glyph', target.finish !== undefined, JSON.stringify(target.finish))
+  // Both comparisons are dot-centre against glyph-CENTRE. A dot sits on the
+  // cell's centre — that is what makes it read as a grip for the cell it names
+  // rather than for its neighbour — while a glyph box's left edge is a
+  // half-cell away, so comparing a dot to an edge reports a placement error of
+  // exactly half a cell when the placement is exact.
+  const firstCentre = target.startLeft + target.pitch / 2
+  const lastCentre = target.finish.left + target.pitch / 2
+  suite.check(
+    'the start grip leads the selection',
+    dotOf(grips[0]) <= firstCentre + 1,
+    JSON.stringify({ dot: dotOf(grips[0]), first: firstCentre }),
+  )
+  suite.check(
+    'the end grip trails the selection',
+    dotOf(grips[1]) >= lastCentre - 1,
+    JSON.stringify({ dot: dotOf(grips[1]), last: lastCentre, marker: MARKER }),
+  )
+
+  // ── dragging the end grip shrinks the selection ──────────────────────────
+  // The grips are the point of the feature: a word selected by the hold is a
+  // guess, and the user must be able to correct it to what they meant.
+  await context.clearPermissions().catch(() => {})
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {})
+  const endGrip = grips[1]
+  const pitch = target.pitch
+  await page.evaluate(([box, dotOffset, step]) => {
+    const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
+    // Press on the DOT's centre, not on the 44px box's centre: the box is a
+    // finger-sized target around a 10px mark, and its centre is a half-cell to
+    // the right of the edge the grip names. `dotOffset` is measured from the
+    // box's left edge, so it already lands on the dot.
+    const at = { x: box.left + dotOffset, y: box.top + box.height / 2 }
+    const send = (type, x, y) => {
+      const event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, clientX: x, clientY: y })
+      grip.dispatchEvent(event)
+    }
+    send('pointerdown', at.x, at.y)
+    // Shorten by two cells, then lift: the selection must shrink to match.
+    send('pointermove', at.x - step, at.y)
+    send('pointerup', at.x - step, at.y)
+  }, [endGrip.box, 17 + 5, pitch * 2])
+  await page.waitForTimeout(300)
+
+  await page.evaluate(() => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    chip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1 }))
+  })
+  await page.waitForTimeout(500)
+  const shrunk = await page.evaluate(async () => {
+    const grips = [...document.querySelectorAll('[data-terminal-mobile-handle]')]
+    let clipboard = null
+    try {
+      clipboard = await navigator.clipboard.readText()
+    } catch (error) {
+      clipboard = `read failed: ${error.message}`
+    }
+    return { clipboard, grips: grips.length }
+  })
+  // `getSelection()` returns the cells as they stand, so a selection that now
+  // ends two cells short of the marker's end copies the marker minus its last
+  // two characters.
+  suite.equal('a grip drag shrinks the selection', shrunk.clipboard, MARKER.slice(0, -2))
+  suite.check('adjusting keeps the selection — and its grips — alive', shrunk.grips === 2, JSON.stringify(shrunk))
 } finally {
   await app.close()
 }

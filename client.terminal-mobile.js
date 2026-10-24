@@ -9448,6 +9448,46 @@ var CSS = `
   outline-offset: 1px;
 }
 
+/* Selection handles: the two grips that grow or shrink a long-press selection.
+   A finger's contact patch is roughly a 44px circle, so the visible dot is
+   deliberately much smaller than the target that receives the press. The dot
+   is centred on the cell it names, and the module positions the 44px box
+   around that centre, so nothing here offsets the dot.
+   The data-end attribute is set for styling and for the module's own
+   handler, which reads the end it is moving from that attribute. */
+.dsh-tm-handle {
+  position: absolute;
+  z-index: 7;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.dsh-tm-handle::after {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--dsw-alias-bg-base);
+  border-radius: 50%;
+  background: var(--dsw-alias-brand-primary);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+}
+.dsh-tm-handle:active { cursor: grabbing; }
+.dsh-tm-handle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 0;
+}
+
 .dsh-tm-keybar {
   display: flex;
   flex: none;
@@ -10006,6 +10046,10 @@ function isCopyChipTouch(event) {
   const target = event.target;
   return typeof target?.closest === "function" && target.closest("[data-terminal-mobile-copy]") !== null;
 }
+function isHandleTouch(event) {
+  const target = event.target;
+  return typeof target?.closest === "function" && target.closest("[data-terminal-mobile-handle]") !== null;
+}
 async function writeToClipboard(text, env) {
   const scope = env === void 0 ? globalThis : env;
   const clipboard = scope.navigator?.clipboard;
@@ -10039,7 +10083,11 @@ function installLongPressCopy(options) {
   let timer = 0;
   let feedbackTimer = 0;
   let chip;
-  let anchor;
+  let range;
+  let handles;
+  let handleDrag;
+  const hasSelection = () => range !== void 0;
+  const endColumnOf = (selection) => Math.max(selection.end.column, selection.start.column + 1);
   const clearTimer = () => {
     if (timer !== 0) {
       clearTimeout(timer);
@@ -10065,6 +10113,11 @@ function installLongPressCopy(options) {
     chip.remove();
     chip = void 0;
   };
+  const removeHandles = () => {
+    if (handles === void 0) return;
+    for (const handle of handles) handle.remove();
+    handles = void 0;
+  };
   const dismiss = () => {
     clearFeedback();
     try {
@@ -10072,13 +10125,8 @@ function installLongPressCopy(options) {
     } catch {
     }
     removeChip();
-    anchor = void 0;
-  };
-  const selectionStartOf = (current) => {
-    if (current.bufferRow === anchor.bufferRow) {
-      return { column: Math.min(anchor.column, current.column), bufferRow: anchor.bufferRow };
-    }
-    return { column: 0, bufferRow: Math.min(anchor.bufferRow, current.bufferRow) };
+    removeHandles();
+    range = void 0;
   };
   const showChip = (text) => {
     if (chip === void 0) {
@@ -10091,42 +10139,192 @@ function installLongPressCopy(options) {
     }
     chip.textContent = text;
   };
-  const placeChip = (cell) => {
+  const hostGeometry = () => {
     const rows = node.querySelector(".xterm-rows");
-    if (rows === null || rows.childElementCount === 0) return;
-    const hostBox = node.getBoundingClientRect();
-    const row = findRowByBufferRow(rows, cell.bufferRow, ydisp());
+    if (rows === null || rows.childElementCount === 0) return void 0;
     const gridBox = screenBox(rows, node);
-    const chipBox = chip.getBoundingClientRect();
-    const margin = 4;
-    if (row !== void 0 && gridBox !== void 0) {
-      const cellWidth = gridBox.width / emulator.cols;
-      const x = gridBox.left - hostBox.left + (cell.column + 0.5) * cellWidth;
-      chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(hostBox.width - chipBox.width - margin, margin)))}px`;
-    } else {
-      chip.style.left = `${margin}px`;
+    if (gridBox === void 0) return void 0;
+    const hostBox = node.getBoundingClientRect();
+    if (hostBox.width <= 0) return void 0;
+    return {
+      left: hostBox.left,
+      gridLeft: gridBox.left,
+      top: hostBox.top,
+      width: hostBox.width,
+      cellWidth: gridBox.width / emulator.cols
+    };
+  };
+  const measureCellWidth = (row) => {
+    const fromRow = pitchFromRow(row);
+    if (fromRow !== void 0) return fromRow;
+    const probe = node.querySelector(".xterm-char-measure-element");
+    if (probe === null) return void 0;
+    const text = probe.textContent ?? "";
+    const width = probe.getBoundingClientRect().width;
+    if (text.length === 0 || width <= 0) return void 0;
+    return width / text.length;
+  };
+  const pitchFromRow = (row) => {
+    if (row === void 0 || row === null) return void 0;
+    const walker = row.ownerDocument.createTreeWalker(
+      row,
+      4
+      /* NodeFilter.SHOW_TEXT */
+    );
+    let previous;
+    for (let node2 = walker.nextNode(); node2 !== null; node2 = walker.nextNode()) {
+      const text = node2.textContent ?? "";
+      if (text.length === 0) continue;
+      const range2 = row.ownerDocument.createRange();
+      range2.selectNodeContents(node2);
+      for (let offset = 0; offset < text.length; offset += 1) {
+        range2.setStart(node2, offset);
+        range2.setEnd(node2, offset + 1);
+        const box = range2.getBoundingClientRect();
+        if (box.width <= 0) continue;
+        if (previous !== void 0 && box.left > previous.left) {
+          const pitch = box.left - previous.left;
+          range2.detach();
+          return pitch;
+        }
+        previous = box;
+      }
+      range2.detach();
     }
-    if (row === void 0) {
-      chip.style.top = `${margin}px`;
-      return;
-    }
+    return void 0;
+  };
+  const rowBoxOf = (bufferRow) => {
+    const geometry = hostGeometry();
+    if (geometry === void 0) return void 0;
+    const rows = node.querySelector(".xterm-rows");
+    const row = findRowByBufferRow(rows, bufferRow, ydisp());
+    if (row === void 0) return void 0;
     const rowBox = row.getBoundingClientRect();
-    const above = rowBox.top - hostBox.top - chipBox.height - 6;
-    chip.style.top = `${Math.round(above >= 0 ? above : rowBox.bottom - hostBox.top + 6)}px`;
+    const cellWidth = measureCellWidth(row) ?? geometry.cellWidth;
+    return {
+      // The grid is inset by the host's padding, and a column index is an
+      // offset from the grid — not from the host. Anchoring at zero put every
+      // column a padding-width to the left of the glyph it names.
+      left: geometry.gridLeft - geometry.left,
+      top: rowBox.top - geometry.top,
+      width: geometry.width,
+      height: rowBox.height,
+      cellWidth
+    };
+  };
+  const placeChip = (cell) => {
+    const box = rowBoxOf(cell.bufferRow);
+    const margin = 4;
+    if (box === void 0 || chip === void 0) return;
+    const chipBox = chip.getBoundingClientRect();
+    const x = box.left + (cell.column + 0.5) * box.cellWidth;
+    chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(node.clientWidth - chipBox.width - margin, margin)))}px`;
+    const above = box.top - chipBox.height - 6;
+    chip.style.top = `${Math.round(above >= 0 ? above : box.top + box.height + 6)}px`;
   };
   const copySelection = async () => {
     const text = emulator.getSelection();
     if (text === "") return;
     const ok = await writeToClipboard(text);
     const strings = labels();
-    if (anchor === void 0) return;
+    if (!hasSelection()) return;
     showChip(ok ? strings.copied : strings.copyFailed);
-    placeChip({ column: anchor.column, bufferRow: anchor.bufferRow });
+    placeChip(range.start);
     clearFeedback();
     feedbackTimer = setTimeout(() => {
       feedbackTimer = 0;
       dismiss();
     }, FEEDBACK_MS);
+  };
+  const gripCell = (column, bufferRow) => ({
+    column: Math.min(Math.max(column, 0), Math.max(emulator.cols - 1, 0)),
+    bufferRow
+  });
+  const moveTo = (end, current) => {
+    if (range === void 0) return;
+    const other = end === "start" ? range.end : range.start;
+    try {
+      if (current.bufferRow === other.bufferRow) {
+        const column = gripCell(current.column, current.bufferRow).column;
+        const edge = Math.max(column, other.column) + 1;
+        const from = end === "start" ? column : other.column;
+        range = end === "start" ? { start: { column, bufferRow: other.bufferRow }, end: { column: edge, bufferRow: other.bufferRow } } : { start: { column: other.column, bufferRow: other.bufferRow }, end: { column: edge, bufferRow: other.bufferRow } };
+        emulator.select(from, other.bufferRow, edge - from);
+      } else {
+        const first = Math.min(current.bufferRow, other.bufferRow);
+        const last = Math.max(current.bufferRow, other.bufferRow);
+        range = { start: { column: 0, bufferRow: first }, end: { column: emulator.cols, bufferRow: last } };
+        emulator.selectLines(first, last);
+      }
+    } catch {
+      return;
+    }
+    placeChip(range.start);
+    placeHandles();
+  };
+  const onHandlePress = (event) => {
+    const handle = event.currentTarget;
+    const end = handle.getAttribute("data-terminal-mobile-handle") === "end" ? "end" : "start";
+    event.preventDefault();
+    event.stopPropagation();
+    if (!hasSelection()) return;
+    handleDrag = end;
+    gesture.selecting = true;
+    handle.setPointerCapture?.(event.pointerId);
+    const move = (moveEvent) => {
+      if (handleDrag === void 0) return;
+      if (moveEvent.cancelable) moveEvent.preventDefault();
+      moveEvent.stopPropagation();
+      const current = cellFromPoint(node, emulator.cols, moveEvent.clientX, moveEvent.clientY, ydisp());
+      if (current !== void 0) moveTo(handleDrag, current);
+    };
+    const finish = () => {
+      handleDrag = void 0;
+      gesture.selecting = false;
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+  };
+  const showHandles = () => {
+    if (range === void 0) return;
+    if (handles === void 0) {
+      handles = [
+        { end: "start", label: labels().handleStart },
+        { end: "end", label: labels().handleEnd }
+      ].map(({ end, label }) => {
+        const handle = document.createElement("button");
+        handle.type = "button";
+        handle.className = "dsh-tm-handle";
+        handle.setAttribute("data-terminal-mobile-handle", end);
+        handle.setAttribute("aria-label", label);
+        handle.addEventListener("pointerdown", onHandlePress);
+        node.appendChild(handle);
+        return handle;
+      });
+    }
+    placeHandles();
+  };
+  const placeHandles = () => {
+    if (range === void 0 || handles === void 0) return;
+    const ends = [range.start, range.end];
+    for (let index = 0; index < handles.length; index += 1) {
+      const handle = handles[index];
+      const box = rowBoxOf(ends[index].bufferRow);
+      if (box === void 0) {
+        handle.style.left = "-9999px";
+        handle.style.top = "-9999px";
+        handle.setAttribute("aria-hidden", "true");
+        continue;
+      }
+      handle.removeAttribute("aria-hidden");
+      const column = index === 0 ? ends[index].column : endColumnOf(range);
+      handle.style.left = `${Math.round(box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth - 22)}px`;
+      handle.style.top = `${Math.round(box.top - 10)}px`;
+    }
   };
   const onChipPress = (event) => {
     event.preventDefault();
@@ -10154,35 +10352,22 @@ function installLongPressCopy(options) {
     const bufferRow = cell.bufferRow;
     const line = lineAt(bufferRow);
     if (line === void 0) return skip("line");
-    const range = wordRangeAt(line, cell.column);
-    if (range === void 0) return skip("word");
+    const word = wordRangeAt(line, cell.column);
+    if (word === void 0) return skip("word");
     try {
-      emulator.select(range.start, bufferRow, range.end - range.start);
+      emulator.select(word.start, bufferRow, word.end - word.start);
     } catch (error) {
       return skip(`select:${String(error && error.message)}`);
     }
-    anchor = { column: range.start, end: range.end, bufferRow };
+    range = {
+      start: { column: word.start, bufferRow },
+      // Exclusive, so a one-character word ends on the next column.
+      end: { column: word.end, bufferRow }
+    };
     gesture.selecting = true;
     showChip(labels().copy);
-    placeChip({ column: range.start, bufferRow });
-  };
-  const extendTo = (clientX, clientY) => {
-    const current = cellFromPoint(node, emulator.cols, clientX, clientY, ydisp());
-    if (current === void 0) return;
-    const bufferRow = current.bufferRow;
-    try {
-      if (bufferRow === anchor.bufferRow) {
-        const column = Math.min(Math.max(current.column, 0), emulator.cols - 1);
-        const start2 = Math.min(anchor.column, column);
-        const end = Math.max(anchor.end, column + 1);
-        emulator.select(start2, anchor.bufferRow, end - start2);
-      } else {
-        emulator.selectLines(Math.min(anchor.bufferRow, bufferRow), Math.max(anchor.bufferRow, bufferRow));
-      }
-    } catch {
-      return;
-    }
-    placeChip(selectionStartOf({ column: current.column, bufferRow }));
+    placeChip(range.start);
+    showHandles();
   };
   let start;
   let dragging = false;
@@ -10190,6 +10375,7 @@ function installLongPressCopy(options) {
   const skipReason = () => lastSkip;
   const onTouchStart = (event) => {
     if (isCopyChipTouch(event)) return;
+    if (isHandleTouch(event)) return;
     clearTimer();
     start = void 0;
     dragging = false;
@@ -10208,6 +10394,7 @@ function installLongPressCopy(options) {
   };
   const onTouchMove = (event) => {
     if (isCopyChipTouch(event)) return;
+    if (isHandleTouch(event)) return;
     if (event.touches.length !== 1) {
       clearTimer();
       start = void 0;
@@ -10222,7 +10409,8 @@ function installLongPressCopy(options) {
     }
     if (event.cancelable) event.preventDefault();
     event.stopPropagation();
-    if (anchor !== void 0) extendTo(touch.clientX, touch.clientY);
+    const current = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp());
+    if (current !== void 0) moveTo("end", current);
   };
   const onTouchEnd = () => {
     clearTimer();
@@ -10242,6 +10430,7 @@ function installLongPressCopy(options) {
       clearFeedback();
       gesture.selecting = false;
       removeChip();
+      removeHandles();
       node.removeEventListener("touchstart", onTouchStart, { capture: true });
       node.removeEventListener("touchmove", onTouchMove, { capture: true });
       node.removeEventListener("touchend", onTouchEnd, { capture: true });
@@ -11045,7 +11234,9 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
       labels: () => ({
         copy: t("select.copy"),
         copied: t("select.copied"),
-        copyFailed: t("select.copyFailed")
+        copyFailed: t("select.copyFailed"),
+        handleStart: t("select.handleStart"),
+        handleEnd: t("select.handleEnd")
       }),
       onTap: () => focusScreen(emulatorRef.current)
     }),

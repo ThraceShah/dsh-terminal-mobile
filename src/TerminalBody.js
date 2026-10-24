@@ -161,6 +161,8 @@ export function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui })
         copy: t('select.copy'),
         copied: t('select.copied'),
         copyFailed: t('select.copyFailed'),
+        handleStart: t('select.handleStart'),
+        handleEnd: t('select.handleEnd'),
       }),
       onTap: () => focusScreen(emulatorRef.current),
     }),
