@@ -178,12 +178,17 @@ const CSS = `
 }
 
 /* Selection handles: the two grips that grow or shrink a long-press selection.
-   A finger's contact patch is roughly a 44px circle, so the visible dot is
-   deliberately much smaller than the target that receives the press. The dot
-   is centred on the cell it names, and the module positions the 44px box
-   around that centre, so nothing here offsets the dot.
-   The data-end attribute is set for styling and for the module's own
-   handler, which reads the end it is moving from that attribute. */
+   The dot IS the press target — no larger invisible box sits around it — so
+   what the finger lands on and what the eye sees are the same 20px mark. A
+   separate 44px box would be easier to hit but places the visible dot 17px
+   away from where the finger presses, which reads as the selection lagging
+   behind the gesture; the dot is drawn at full size instead, and the browser's
+   own touch slop covers the rest.
+   The start grip hangs its dot below the grip point and the end grip above it,
+   as native text selection does: both marks then sit outside the highlighted
+   span they delimit, instead of half-overlapping the first and last cells.
+   The left and top offsets are written per handle by the module, so nothing
+   here positions them. */
 .dsh-tm-handle {
   position: absolute;
   z-index: 7;
@@ -199,11 +204,16 @@ const CSS = `
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
+/* The dot is centred in its 44px target, so the press point and the visible
+   mark are the same place: a dot pinned to the box's edge puts 17px of
+   invisible box between the finger and the mark it appears to grab, which is
+   what made the grips feel detached from the selection. */
 .dsh-tm-handle::after {
   content: '';
   position: absolute;
-  left: 17px;
-  top: 0;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   width: 10px;
   height: 10px;
   border: 1.5px solid var(--dsw-alias-bg-base);
@@ -211,6 +221,11 @@ const CSS = `
   background: var(--dsw-alias-brand-primary);
   box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
 }
+/* The start grip hangs its dot below the grip point, the end grip above it,
+   as native text selection does: both marks then clear the span they delimit
+   rather than sitting half over its first and last cell. */
+.dsh-tm-handle[data-end='start']::after { top: calc(50% + 11px); }
+.dsh-tm-handle[data-end='end']::after { top: calc(50% - 11px); }
 .dsh-tm-handle:active { cursor: grabbing; }
 .dsh-tm-handle:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);

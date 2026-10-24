@@ -633,39 +633,67 @@ export function installLongPressCopy(options) {
   })
 
   /**
+   * The half-open cell span the selection covers, in buffer coordinates.
+   *
+   * `range.end` is exclusive, so an untouched end still needs one cell: a
+   * selection that has shrunk to nothing would otherwise select nothing at all,
+   * and a grip placed on an empty span would have nothing to widen from.
+   */
+  const spanOf = (selection) => {
+    const afterStart =
+      selection.end.bufferRow > selection.start.bufferRow ||
+      (selection.end.bufferRow === selection.start.bufferRow && selection.end.column > selection.start.column)
+    const end = afterStart
+      ? selection.end
+      : { column: selection.start.column + 1, bufferRow: selection.start.bufferRow }
+    return { start: selection.start, end }
+  }
+
+  /**
    * Move one end of the selection to the cell under the finger.
    *
-   * Same row keeps the columns; a different row re-selects whole lines, because
-   * a grip names one cell and cannot express a diagonal. The untouched end is
-   * the anchor, so the highlight always grows away from where the finger first
-   * held.
+   * Both ends may cross rows, and the selection stays character-precise when
+   * they do: xterm's own `select()` takes a LINEAR length — its internal range
+   * builder computes `(endRow - startRow) * cols - startColumn + endColumn` —
+   * so a length that spans rows selects every cell between the two ends, not
+   * the whole lines they sit on. Re-selecting whole lines was a guess at what a
+   * grip could not express, and it was wrong: a drag two rows down selected
+   * every column of the middle row when the finger only wanted the last few.
+   *
+   * The untouched end is the anchor, so the highlight always grows away from
+   * where the finger first held.
    *
    * @param {'start' | 'end'} end - which end the grip is moving.
    * @param {{column: number, bufferRow: number}} current - the cell under the finger.
    */
   const moveTo = (end, current) => {
     if (range === undefined) return
-    const other = end === 'start' ? range.end : range.start
+    const span = spanOf(range)
+    // The untouched end is the anchor: the highlight grows away from where the
+    // finger first held, the way native selection does.
+    const anchor = end === 'start' ? span.end : span.start
+    const moving = gripCell(current.column, current.bufferRow)
+    // Normalise the two ends into an ordered pair, so a grip dragged past its
+    // own anchor swaps the ends instead of collapsing the selection. Only the
+    // same-row case needs a trailing cell: across rows, `moving.column` is
+    // already inclusive on its own row.
+    const sameRow = anchor.bufferRow === moving.bufferRow
+    const forward = sameRow ? anchor.column <= moving.column : anchor.bufferRow <= moving.bufferRow
+    // `range.end` stays EXCLUSIVE: the long-press writer makes a one-character
+    // word end on the next column, and both `spanOf` and `placeHandles` read
+    // that convention. A grip dragged onto a cell therefore names the cell
+    // after it, on whichever row the finger reached.
+    const ordered = forward
+      ? { start: { column: anchor.column, bufferRow: anchor.bufferRow }, end: { column: moving.column + 1, bufferRow: moving.bufferRow } }
+      : { start: { column: moving.column, bufferRow: moving.bufferRow }, end: { column: anchor.column, bufferRow: anchor.bufferRow } }
+    range = ordered
     try {
-      if (current.bufferRow === other.bufferRow) {
-        // One row: the grip is column-precise, and the untouched end is the
-        // anchor, so the highlight grows away from where the finger first held.
-        const column = gripCell(current.column, current.bufferRow).column
-        const edge = Math.max(column, other.column) + 1
-        const from = end === 'start' ? column : other.column
-        range =
-          end === 'start'
-            ? { start: { column, bufferRow: other.bufferRow }, end: { column: edge, bufferRow: other.bufferRow } }
-            : { start: { column: other.column, bufferRow: other.bufferRow }, end: { column: edge, bufferRow: other.bufferRow } }
-        emulator.select(from, other.bufferRow, edge - from)
-      } else {
-        // A different row: a grip names one cell and cannot express a diagonal,
-        // so the selection becomes the whole lines the two ends sit on.
-        const first = Math.min(current.bufferRow, other.bufferRow)
-        const last = Math.max(current.bufferRow, other.bufferRow)
-        range = { start: { column: 0, bufferRow: first }, end: { column: emulator.cols, bufferRow: last } }
-        emulator.selectLines(first, last)
-      }
+      // Across rows the linear span already reaches the end's cell; on one row
+      // the exclusive end needs no adjustment either, because the length below
+      // is derived from the same two ends.
+      const spanRows = ordered.end.bufferRow - ordered.start.bufferRow
+      const length = spanRows === 0 ? ordered.end.column - ordered.start.column : spanRows * emulator.cols - ordered.start.column + ordered.end.column
+      emulator.select(ordered.start.column, ordered.start.bufferRow, Math.max(length, 1))
     } catch {
       return
     }
@@ -756,16 +784,11 @@ export function installLongPressCopy(options) {
         continue
       }
       handle.removeAttribute('aria-hidden')
-      // Both offsets are relative to the HOST, which carries padding the grid
-      // does not: `box.left` is the grid's inset from the host edge, and the
-      // grip box is 44px wide with its dot centred at 22px. The half-cell puts
-      // the dot on the cell's centre, where a finger expects the grip — an edge
-      // leaves the dot half on the neighbouring cell and misreads as a grip for
-      // a cell the selection does not cover.
-      //
-      // `range.end` is exclusive, so it already names the cell after the last
-      // selected one, and `endColumnOf` clamps a shrunk-to-nothing selection
-      // back to a cell a grip can still hold and widen.
+      // `box.left` is the grid's inset from the host edge: a column index is an
+      // offset from the grid, not from the host, so anchoring at zero put every
+      // grip a padding-width to the left of the glyph it names. The dot is
+      // centred in its 44px box, so half the box puts that centre on the cell
+      // boundary the grip names.
       const column = index === 0 ? ends[index].column : endColumnOf(range)
       handle.style.left = `${Math.round(box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth - 22)}px`
       handle.style.top = `${Math.round(box.top - 10)}px`

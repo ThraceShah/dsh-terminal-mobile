@@ -261,7 +261,9 @@ try {
   // the row's end, and the assertion fails against a placement that is exact.
   // Measuring the word's own first and last glyph keeps the check honest at
   // any width.
-  const dotOf = (grip) => grip.box.left + 17 + 5
+  // The dot IS the press target: its centre is the grip box's centre, so the
+  // module's placement and this measurement share one origin.
+  const dotOf = (grip) => grip.box.left + grip.box.width / 2
   suite.check('the marker reports its own last glyph', target.finish !== undefined, JSON.stringify(target.finish))
   // Both comparisons are dot-centre against glyph-CENTRE. A dot sits on the
   // cell's centre — that is what makes it read as a grip for the cell it names
@@ -303,7 +305,7 @@ try {
     // Shorten by two cells, then lift: the selection must shrink to match.
     send('pointermove', at.x - step, at.y)
     send('pointerup', at.x - step, at.y)
-  }, [endGrip.box, 17 + 5, pitch * 2])
+  }, [endGrip.box, endGrip.box.width / 2, pitch * 2])
   await page.waitForTimeout(300)
 
   await page.evaluate(() => {
@@ -326,6 +328,156 @@ try {
   // two characters.
   suite.equal('a grip drag shrinks the selection', shrunk.clipboard, MARKER.slice(0, -2))
   suite.check('adjusting keeps the selection — and its grips — alive', shrunk.grips === 2, JSON.stringify(shrunk))
+
+  // ── dragging the end grip onto the next row is character-precise ─────────
+  // A grip used to fall back to re-selecting whole lines whenever a drag
+  // crossed a row boundary, because a grip "cannot express a diagonal". It
+  // can: xterm's `select()` takes a linear length, so a length that spans rows
+  // selects every cell between the two ends. A drag that lands two cells into
+  // the row below must copy the marker plus those two cells — not the whole
+  // row, which is what the old fallback produced.
+  const SECOND = 'abcdefgh'
+  // A marker of its own for this part: the cross-row drag must land on two
+  // CONSECUTIVE rows, and reusing the earlier `SELECTME` would leave an echo
+  // of it higher in the buffer — `indexOf` finds that first copy, so the drag
+  // would span a prompt row in between and copy it too.
+  const CROSS = 'CROSSROW'
+  // Two `echo`s on one line, so their output lands on consecutive rows with no
+  // prompt between them: `page.keyboard.type` sends `\` as a literal backslash,
+  // so `printf '...\n'` would print a literal `\n` rather than a newline.
+  await page.locator('[data-sidebar-terminal-screen]').click()
+  await page.keyboard.type(`echo ${CROSS}; echo ${SECOND}`)
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(1200)
+
+  // Re-measure: the printf scrolled the buffer, so the earlier `target` point
+  // names a row that has since moved.
+  const markerPoint = await page.evaluate((marker) => {
+    const screen = document.querySelector('[data-sidebar-terminal-screen]')
+    const rows = screen.querySelector('.xterm-rows')
+    for (let i = 0; i < rows.childElementCount; i++) {
+      const row = rows.children[i]
+      // Exact match, not `indexOf`: the command line the shell echoes back
+      // contains the marker too, and a long-press there would select the
+      // command rather than the output.
+      if ((row.textContent ?? '').trim() !== marker) continue
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+      let column = 0
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const value = node.textContent ?? ''
+        if (!value.length) continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        for (let off = 0; off < value.length; off++) {
+          range.setStart(node, off)
+          range.setEnd(node, off + 1)
+          const box = range.getBoundingClientRect()
+          if (column + off === 4) return { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+        }
+        range.detach()
+        column += value.length
+      }
+    }
+    return undefined
+  }, CROSS)
+  suite.check('the cross-row marker is on screen after the printf', markerPoint !== undefined, JSON.stringify(markerPoint))
+
+  // The copy chip retires itself after its feedback window, and that dismissal
+  // clears the selection and the grips with it. Re-select the marker so this
+  // drag starts from a live selection rather than from the stale boxes the
+  // previous assertion left behind.
+  await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y), [markerPoint])
+  await page.waitForTimeout(700)
+  await page.evaluate(([p]) => window.__tmDispatch('touchend', p.x, p.y), [markerPoint])
+  await page.waitForTimeout(250)
+  const liveGrips = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-terminal-mobile-handle]')].map((g) => g.getBoundingClientRect()),
+  )
+  suite.equal('a fresh hold restores the grips', liveGrips.length, 2, JSON.stringify(liveGrips.map((b) => Math.round(b.left))))
+
+  // Measure the second line's glyph boxes the same way the marker's were
+  // measured, so the drop point is a real cell on that row.
+  const second = await page.evaluate((text) => {
+    const screen = document.querySelector('[data-sidebar-terminal-screen]')
+    const rows = screen.querySelector('.xterm-rows')
+    for (let index = 0; index < rows.childElementCount; index += 1) {
+      const row = rows.children[index]
+      // Exact match, not `indexOf`: the command line echoes back the word too.
+      if ((row.textContent ?? '').trim() !== text) continue
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+      let column = 0
+      let first
+      let pitch
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const value = node.textContent ?? ''
+        if (value.length === 0) continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        for (let offset = 0; offset < value.length; offset += 1) {
+          range.setStart(node, offset)
+          range.setEnd(node, offset + 1)
+          const box = range.getBoundingClientRect()
+          if (column + offset === 0 && first === undefined) first = { left: box.left, top: box.top, height: box.height }
+          if (first !== undefined && pitch === undefined && box.width > 0) pitch = box.left + box.width - first.left
+        }
+        range.detach()
+        column += value.length
+      }
+      if (first === undefined || !pitch) return undefined
+      return { firstLeft: first.left, pitch, rowTop: first.top, rowHeight: first.height }
+    }
+    return undefined
+  }, SECOND)
+  suite.check('the second line is on screen', second !== undefined, JSON.stringify(second))
+
+  // Drag the END grip from the marker down to column 2 of the next row. The
+  // grip box is 44px with the dot centred, so pressing its centre and moving
+  // to the drop point drives the real pointer path.
+  // `1.5 * pitch` lands on the second glyph's centre, so the end grip names
+  // column 1 and the exclusive end is column 2: the drag copies exactly the
+  // first two cells of the row below.
+  const drop = { x: second.firstLeft + 1.5 * second.pitch, y: second.rowTop + second.rowHeight / 2 }
+  const endBox = liveGrips[1]
+  const gripCentre = { x: endBox.left + endBox.width / 2, y: endBox.top + endBox.height / 2 }
+  // Dispatch the drag as pointer events on the grip itself, the same way the
+  // chip's own press is driven below: Playwright's mouse in a touch context
+  // synthesises a pointer stream that the screen's capture-phase listeners see
+  // first, and a grip press they consumed would never reach the grip's own
+  // handlers — the press would be read as a tap that dismisses the selection.
+  await page.evaluate(([from, to]) => {
+    const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
+    const send = (type, x, y) => {
+      const event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, clientX: x, clientY: y })
+      grip.dispatchEvent(event)
+    }
+    send('pointerdown', from.x, from.y)
+    send('pointermove', to.x, to.y)
+    send('pointerup', to.x, to.y)
+  }, [gripCentre, drop])
+  await page.waitForTimeout(250)
+
+  // Press the Copy chip: the clipboard only updates on a copy, so reading it
+  // without this would assert against whatever the previous copy left behind.
+  await page.evaluate(() => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    if (chip !== null) chip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1 }))
+  })
+  await page.waitForTimeout(500)
+
+  const across = await page.evaluate(async () => {
+    let clipboard = null
+    try {
+      clipboard = await navigator.clipboard.readText()
+    } catch (error) {
+      clipboard = `read failed: ${error.message}`
+    }
+    return { clipboard }
+  })
+  // The marker, then the first two cells of the row below: a cross-row drag
+  // that stopped two cells in must copy exactly those, not the whole row.
+  suite.equal('a cross-row drag selects only the cells it crossed', across.clipboard, `${CROSS}\n${SECOND.slice(0, 2)}`, JSON.stringify(across))
+  const survived = await page.evaluate(() => document.querySelectorAll('[data-terminal-mobile-handle]').length)
+  suite.equal('the grips survive a cross-row drag', survived, 2, JSON.stringify({ grips: survived }))
 } finally {
   await app.close()
 }
