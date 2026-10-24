@@ -871,6 +871,9 @@ export function installLongPressCopy(options) {
       if (handleDrag === undefined) return
       if (moveEvent.cancelable) moveEvent.preventDefault()
       moveEvent.stopPropagation()
+      // Follow immediately: the handle is what the eye tracks, and it must
+      // stay under the finger even when the cell pipeline waits for a frame.
+      followFinger(handle, moveEvent.clientX, moveEvent.clientY)
       scheduleMove(end, moveEvent.clientX, moveEvent.clientY)
     }
     const finish = () => {
@@ -878,6 +881,9 @@ export function installLongPressCopy(options) {
       // frame: the grip must not stop one cell short of the last touch.
       flushMove()
       handleDrag = undefined
+      // Snap the released grip from the raw pointer position onto the cell it
+      // selected — the one place both are known to agree.
+      placeHandles()
       gesture.selecting = false
       handle.removeEventListener('pointermove', move)
       handle.removeEventListener('pointerup', finish)
@@ -920,11 +926,46 @@ export function installLongPressCopy(options) {
     placeHandles()
   }
 
+  /**
+   * Glue a handle to the raw pointer position, bypassing the cell grid.
+   *
+   * The cell pipeline can only apply once per painted frame, from a sample up
+   * to one pointer event old — so a grip positioned from the cell under the
+   * finger trails a fast one by a frame's worth of movement, which at a normal
+   * swipe speed is several cells: the grip and the finger visibly separate,
+   * while a slow drag stays inside one cell and looks fine.
+   *
+   * Native selection grips do not have this problem: the HANDLE tracks the
+   * touch coordinates directly while the SELECTION snaps cell by cell behind
+   * it. This is the same split — one style write per event, straight from the
+   * gesture's cached host geometry, with no measurement and no frame wait.
+   * The handle returns to its cell when the gesture releases.
+   *
+   * @param {HTMLElement} handle
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  const followFinger = (handle, clientX, clientY) => {
+    const geometry = hostGeometry()
+    if (geometry === undefined) return
+    // The dot is centred at 50% of the 44px box: +11px from centre for a start
+    // grip hanging below its cell, -11px for an end grip above it (the CSS
+    // offsets), so the DOT lands on the pointer — not the box's centre.
+    const dotFromCentre = handle.getAttribute('data-terminal-mobile-handle') === 'start' ? 11 : -11
+    handle.style.left = `${Math.round(clientX - geometry.left - 22)}px`
+    handle.style.top = `${Math.round(clientY - geometry.top - 22 - dotFromCentre)}px`
+  }
+
   const placeHandles = () => {
     if (range === undefined || handles === undefined) return
     const ends = [range.start, range.end]
     for (let index = 0; index < handles.length; index += 1) {
       const handle = handles[index]
+      // A handle glued to the finger is placed by `followFinger`; snapping it
+      // onto its cell here would tear it back off the finger on every frame,
+      // which is exactly the separation this gesture is meant to avoid.
+      const glued = index === 0 ? handleDrag === 'start' : handleDrag === 'end' || dragging
+      if (glued) continue
       const box = rowBoxOf(ends[index].bufferRow)
       if (box === undefined) {
         // The end is scrolled off; park the grip out of the way rather than
@@ -1082,6 +1123,9 @@ export function installLongPressCopy(options) {
     // The gesture is claimed: keep the scroll module and the page out of it.
     if (event.cancelable) event.preventDefault()
     event.stopPropagation()
+    // Same split as a grip drag: the end handle rides the finger, the
+    // selection snaps to cells behind it on the next frame.
+    if (handles !== undefined && handles[1] !== undefined) followFinger(handles[1], touch.clientX, touch.clientY)
     scheduleMove('end', touch.clientX, touch.clientY)
   }
 
@@ -1092,6 +1136,8 @@ export function installLongPressCopy(options) {
     dragging = false
     // The highlight ends exactly where the finger lifted.
     flushMove()
+    // The end handle returns from the raw pointer position to its cell.
+    placeHandles()
     // Released: the highlight stays until the next press, but the next gesture
     // belongs to scrolling again.
     gesture.selecting = false

@@ -290,7 +290,7 @@ try {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {})
   const endGrip = grips[1]
   const pitch = target.pitch
-  await page.evaluate(([box, dotOffset, step]) => {
+  const dragTo = await page.evaluate(([box, dotOffset, step]) => {
     const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
     // Press on the DOT's centre, not on the 44px box's centre: the box is a
     // finger-sized target around a 10px mark, and its centre is a half-cell to
@@ -302,10 +302,36 @@ try {
       grip.dispatchEvent(event)
     }
     send('pointerdown', at.x, at.y)
-    // Shorten by two cells, then lift: the selection must shrink to match.
-    send('pointermove', at.x - step, at.y)
-    send('pointerup', at.x - step, at.y)
+    // Shorten by two cells. The release is dispatched separately so the
+    // mid-drag position can be observed while the pointer is still down.
+    const to = { x: at.x - step, y: at.y }
+    send('pointermove', to.x, to.y)
+    return { to }
   }, [endGrip.box, endGrip.box.width / 2, pitch * 2])
+
+  // ── mid-drag, the grip rides the raw pointer ──────────────────────────────
+  // The selection can only snap to cells once per painted frame, so a fast
+  // finger would otherwise outrun the handle by a frame's worth of movement:
+  // the grip and the finger visibly separate. The handle itself tracks the
+  // pointer coordinates directly — its dot must be ON the point dispatched
+  // above, not on the nearest cell's centre, while the pointer is still down.
+  const midDrag = await page.evaluate(() => {
+    const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
+    const box = grip.getBoundingClientRect()
+    // The end grip's dot sits 11px above its box's centre (the CSS lift), so
+    // the dot's own centre is what must land on the pointer.
+    return { dotX: box.left + box.width / 2, dotY: box.top + 11 }
+  })
+  suite.check(
+    'the dragged grip rides the raw pointer mid-drag',
+    Math.abs(midDrag.dotX - dragTo.to.x) <= 1 && Math.abs(midDrag.dotY - dragTo.to.y) <= 1,
+    JSON.stringify({ ...midDrag, want: dragTo.to }),
+  )
+
+  await page.evaluate((to) => {
+    const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
+    grip.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, clientX: to.x, clientY: to.y }))
+  }, dragTo.to)
   await page.waitForTimeout(300)
 
   await page.evaluate(() => {

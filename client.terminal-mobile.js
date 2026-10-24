@@ -10346,11 +10346,13 @@ function installLongPressCopy(options) {
       if (handleDrag === void 0) return;
       if (moveEvent.cancelable) moveEvent.preventDefault();
       moveEvent.stopPropagation();
+      followFinger(handle, moveEvent.clientX, moveEvent.clientY);
       scheduleMove(end, moveEvent.clientX, moveEvent.clientY);
     };
     const finish = () => {
       flushMove();
       handleDrag = void 0;
+      placeHandles();
       gesture.selecting = false;
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", finish);
@@ -10379,11 +10381,20 @@ function installLongPressCopy(options) {
     }
     placeHandles();
   };
+  const followFinger = (handle, clientX, clientY) => {
+    const geometry = hostGeometry();
+    if (geometry === void 0) return;
+    const dotFromCentre = handle.getAttribute("data-terminal-mobile-handle") === "start" ? 11 : -11;
+    handle.style.left = `${Math.round(clientX - geometry.left - 22)}px`;
+    handle.style.top = `${Math.round(clientY - geometry.top - 22 - dotFromCentre)}px`;
+  };
   const placeHandles = () => {
     if (range === void 0 || handles === void 0) return;
     const ends = [range.start, range.end];
     for (let index = 0; index < handles.length; index += 1) {
       const handle = handles[index];
+      const glued = index === 0 ? handleDrag === "start" : handleDrag === "end" || dragging;
+      if (glued) continue;
       const box = rowBoxOf(ends[index].bufferRow);
       if (box === void 0) {
         handle.style.left = "-9999px";
@@ -10482,6 +10493,7 @@ function installLongPressCopy(options) {
     }
     if (event.cancelable) event.preventDefault();
     event.stopPropagation();
+    if (handles !== void 0 && handles[1] !== void 0) followFinger(handles[1], touch.clientX, touch.clientY);
     scheduleMove("end", touch.clientX, touch.clientY);
   };
   const onTouchEnd = () => {
@@ -10490,6 +10502,7 @@ function installLongPressCopy(options) {
     if (!dragging) return;
     dragging = false;
     flushMove();
+    placeHandles();
     gesture.selecting = false;
   };
   node.addEventListener("touchstart", onTouchStart, { passive: false, capture: true });
