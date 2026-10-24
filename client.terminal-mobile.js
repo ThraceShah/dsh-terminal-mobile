@@ -41,7 +41,7 @@ __export(TerminalBody_exports, {
 module.exports = __toCommonJS(TerminalBody_exports);
 var React3 = __toESM(require("react"), 1);
 
-// node_modules/@xterm/xterm/lib/xterm.mjs
+// node_modules/.pnpm/@xterm+xterm@6.0.0/node_modules/@xterm/xterm/lib/xterm.mjs
 var zs = Object.defineProperty;
 var Rl = Object.getOwnPropertyDescriptor;
 var Ll = (s15, t) => {
@@ -9156,7 +9156,7 @@ var Dl = class extends D {
   }
 };
 
-// node_modules/@xterm/addon-fit/lib/addon-fit.mjs
+// node_modules/.pnpm/@xterm+addon-fit@0.11.0/node_modules/@xterm/addon-fit/lib/addon-fit.mjs
 var h = 2;
 var _ = 1;
 var o = class {
@@ -9390,6 +9390,7 @@ var CSS = `
 }
 
 .dsh-tm-screen {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -9418,6 +9419,33 @@ var CSS = `
 }
 .dsh-tm-screen .xterm .xterm-rows .xterm-cursor.xterm-cursor-underline {
   border-bottom-color: var(--dsh-tm-cursor, var(--dsw-alias-brand-primary));
+}
+
+/* The long-press Copy chip: absolutely positioned inside the screen host, so
+   it needs an explicit z-index to sit above xterm's canvas layers. */
+.dsh-tm-copychip {
+  position: absolute;
+  z-index: 6;
+  padding: 5px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+.dsh-tm-copychip:active { background: var(--dsw-alias-interactive-bg-active); }
+.dsh-tm-copychip:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
 }
 
 .dsh-tm-keybar {
@@ -9748,7 +9776,8 @@ var LINE_HEIGHT_FALLBACK = 17;
 var INERTIA_DECAY = 0.92;
 var INERTIA_MIN_VELOCITY = 0.05;
 function installScrollOwnership(options) {
-  const { node, mode, target, lineHeight, canScroll } = options;
+  const { node, mode, target, lineHeight, canScroll, paused } = options;
+  const isPaused = () => paused !== void 0 && paused();
   let active = null;
   let remainder = 0;
   let inertiaFrame = 0;
@@ -9800,6 +9829,7 @@ function installScrollOwnership(options) {
   };
   const onTouchMove = (event) => {
     event.stopPropagation();
+    if (isPaused()) return;
     if (mode() !== "terminal") return;
     if (canScroll !== void 0 && !canScroll()) return;
     const touch = event.touches[0];
@@ -9813,6 +9843,7 @@ function installScrollOwnership(options) {
   const onTouchEnd = (event) => {
     active = null;
     event.stopPropagation();
+    if (isPaused()) return;
     if (mode() !== "terminal") return;
     if (event.cancelable) event.preventDefault();
     startInertia();
@@ -9843,6 +9874,378 @@ function installScrollOwnership(options) {
       node.removeEventListener("touchend", onTouchEnd, { capture: true });
       node.removeEventListener("touchcancel", onTouchEnd, { capture: true });
       node.removeEventListener("wheel", onWheel, { capture: true });
+    }
+  };
+}
+
+// src/selection.js
+var LONG_PRESS_MS = 480;
+var LONG_PRESS_SLOP_PX = 10;
+var FEEDBACK_MS = 1400;
+var WORD_BOUNDARIES = /* @__PURE__ */ new Set([
+  " ",
+  "	",
+  "\r",
+  "\n",
+  '"',
+  "'",
+  "`",
+  "|",
+  "&",
+  ";",
+  "<",
+  ">",
+  "(",
+  ")",
+  "{",
+  "}",
+  "[",
+  "]",
+  "$",
+  "!",
+  "?",
+  "*",
+  "#"
+]);
+function isWordCharacter(char) {
+  if (char === void 0 || char === null || char === "") return false;
+  if (WORD_BOUNDARIES.has(char)) return false;
+  const code = char.codePointAt(0);
+  if (code >= 33 && code <= 126) return true;
+  return !/\s/u.test(char);
+}
+function wordRangeAt(line, column) {
+  if (typeof line !== "string" || line.length === 0) return void 0;
+  const at2 = Math.min(Math.max(Math.floor(column), 0), line.length - 1);
+  if (!isWordCharacter(line[at2])) return void 0;
+  let start = at2;
+  let end = at2 + 1;
+  while (start > 0 && isWordCharacter(line[start - 1])) start -= 1;
+  while (end < line.length && isWordCharacter(line[end])) end += 1;
+  return { start, end };
+}
+function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
+  const miss = (guard) => {
+    onMiss?.(guard);
+    return void 0;
+  };
+  if (node === null || node === void 0) return miss("node");
+  if (!(cols > 0)) return miss("cols");
+  const rows = node.querySelector(".xterm-rows");
+  if (rows === null) return miss("rows");
+  const target = findRowAtPoint(rows, clientY);
+  if (target === void 0) return miss("row");
+  const canvas = node.querySelector("canvas");
+  if (canvas === null) {
+    const column2 = columnAtPointInRow(target.row, clientX, cols);
+    if (column2 === void 0) return miss("column");
+    return { column: column2, bufferRow: ydisp + target.index, row: target.row };
+  }
+  const grid = canvas.getBoundingClientRect();
+  if (grid.width <= 0) return miss("grid");
+  const column = Math.floor((clientX - grid.left) / grid.width * cols);
+  if (column < 0 || column >= cols) return miss("column");
+  return { column, bufferRow: ydisp + target.index, row: target.row };
+}
+function findRowAtPoint(rows, clientY) {
+  const children = rows.children;
+  for (let index = 0; index < children.length; index += 1) {
+    const row = children[index];
+    const box = row.getBoundingClientRect();
+    if (box.height <= 0) continue;
+    if (clientY < box.top || clientY > box.bottom) continue;
+    return { row, index };
+  }
+  return void 0;
+}
+function columnAtPointInRow(row, clientX, cols) {
+  const walker = row.ownerDocument.createTreeWalker(
+    row,
+    4
+    /* NodeFilter.SHOW_TEXT */
+  );
+  let column = 0;
+  let lastColumn;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.textContent ?? "";
+    if (text.length === 0) continue;
+    const range = row.ownerDocument.createRange();
+    range.selectNodeContents(node);
+    for (let offset = 0; offset < text.length; offset += 1) {
+      range.setStart(node, offset);
+      range.setEnd(node, offset + 1);
+      const box = range.getBoundingClientRect();
+      if (box.width > 0 || box.height > 0) lastColumn = column + offset;
+      if (clientX < box.left) {
+        range.detach();
+        return lastColumn ?? 0;
+      }
+      if (clientX <= box.right) {
+        range.detach();
+        return column + offset;
+      }
+    }
+    range.detach();
+    column += text.length;
+  }
+  if (column === 0) return void 0;
+  return Math.min(lastColumn ?? column - 1, Math.max(cols - 1, 0));
+}
+function findRowByBufferRow(rows, bufferRow, ydisp = 0) {
+  const index = bufferRow - ydisp;
+  if (index < 0 || index >= rows.childElementCount) return void 0;
+  return rows.children[index];
+}
+function screenBox(rows, node) {
+  const canvas = node.querySelector("canvas");
+  const box = (canvas ?? rows).getBoundingClientRect();
+  if (box.width <= 0) return void 0;
+  return { left: box.left, width: box.width };
+}
+function isCopyChipTouch(event) {
+  const target = event.target;
+  return typeof target?.closest === "function" && target.closest("[data-terminal-mobile-copy]") !== null;
+}
+async function writeToClipboard(text, env) {
+  const scope = env === void 0 ? globalThis : env;
+  const clipboard = scope.navigator?.clipboard;
+  if (clipboard !== void 0 && typeof clipboard.writeText === "function") {
+    try {
+      await clipboard.writeText(text);
+      return true;
+    } catch {
+    }
+  }
+  const doc = scope.document;
+  if (doc === void 0 || doc === null || typeof doc.execCommand !== "function") return false;
+  try {
+    const area = doc.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.top = "-1000px";
+    area.style.opacity = "0";
+    doc.body.appendChild(area);
+    area.select();
+    const copied = doc.execCommand("copy");
+    doc.body.removeChild(area);
+    return copied === true;
+  } catch {
+    return false;
+  }
+}
+function installLongPressCopy(options) {
+  const { node, emulator, gesture, labels } = options;
+  let timer = 0;
+  let feedbackTimer = 0;
+  let chip;
+  let anchor;
+  const clearTimer = () => {
+    if (timer !== 0) {
+      clearTimeout(timer);
+      timer = 0;
+    }
+  };
+  const clearFeedback = () => {
+    if (feedbackTimer !== 0) {
+      clearTimeout(feedbackTimer);
+      feedbackTimer = 0;
+    }
+  };
+  const lineAt = (bufferRow) => {
+    try {
+      const line = emulator.buffer.active.getLine(bufferRow);
+      return line === void 0 ? void 0 : line.translateToString(true);
+    } catch {
+      return void 0;
+    }
+  };
+  const removeChip = () => {
+    if (chip === void 0) return;
+    chip.remove();
+    chip = void 0;
+  };
+  const dismiss = () => {
+    clearFeedback();
+    try {
+      emulator.clearSelection();
+    } catch {
+    }
+    removeChip();
+    anchor = void 0;
+  };
+  const selectionStartOf = (current) => {
+    if (current.bufferRow === anchor.bufferRow) {
+      return { column: Math.min(anchor.column, current.column), bufferRow: anchor.bufferRow };
+    }
+    return { column: 0, bufferRow: Math.min(anchor.bufferRow, current.bufferRow) };
+  };
+  const showChip = (text) => {
+    if (chip === void 0) {
+      chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "dsh-tm-copychip";
+      chip.setAttribute("data-terminal-mobile-copy", "");
+      chip.addEventListener("pointerdown", onChipPress);
+      node.appendChild(chip);
+    }
+    chip.textContent = text;
+  };
+  const placeChip = (cell) => {
+    const rows = node.querySelector(".xterm-rows");
+    if (rows === null || rows.childElementCount === 0) return;
+    const hostBox = node.getBoundingClientRect();
+    const row = findRowByBufferRow(rows, cell.bufferRow, ydisp());
+    const gridBox = screenBox(rows, node);
+    const chipBox = chip.getBoundingClientRect();
+    const margin = 4;
+    if (row !== void 0 && gridBox !== void 0) {
+      const cellWidth = gridBox.width / emulator.cols;
+      const x = gridBox.left - hostBox.left + (cell.column + 0.5) * cellWidth;
+      chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(hostBox.width - chipBox.width - margin, margin)))}px`;
+    } else {
+      chip.style.left = `${margin}px`;
+    }
+    if (row === void 0) {
+      chip.style.top = `${margin}px`;
+      return;
+    }
+    const rowBox = row.getBoundingClientRect();
+    const above = rowBox.top - hostBox.top - chipBox.height - 6;
+    chip.style.top = `${Math.round(above >= 0 ? above : rowBox.bottom - hostBox.top + 6)}px`;
+  };
+  const copySelection = async () => {
+    const text = emulator.getSelection();
+    if (text === "") return;
+    const ok = await writeToClipboard(text);
+    const strings = labels();
+    if (anchor === void 0) return;
+    showChip(ok ? strings.copied : strings.copyFailed);
+    placeChip({ column: anchor.column, bufferRow: anchor.bufferRow });
+    clearFeedback();
+    feedbackTimer = setTimeout(() => {
+      feedbackTimer = 0;
+      dismiss();
+    }, FEEDBACK_MS);
+  };
+  const onChipPress = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void copySelection();
+  };
+  const skip = (reason) => {
+    lastSkip = reason;
+    node.setAttribute("data-terminal-mobile-select-skip", reason);
+    return void 0;
+  };
+  const ydisp = () => {
+    const buffer = emulator.buffer.active;
+    const typed = (
+      /** @type {{ ydisp?: number, baseY: number }} */
+      buffer
+    );
+    return typeof typed.ydisp === "number" ? typed.ydisp : buffer.baseY;
+  };
+  const fireLongPress = (touch) => {
+    lastSkip = void 0;
+    node.removeAttribute("data-terminal-mobile-select-skip");
+    const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip);
+    if (cell === void 0) return;
+    const bufferRow = cell.bufferRow;
+    const line = lineAt(bufferRow);
+    if (line === void 0) return skip("line");
+    const range = wordRangeAt(line, cell.column);
+    if (range === void 0) return skip("word");
+    try {
+      emulator.select(range.start, bufferRow, range.end - range.start);
+    } catch (error) {
+      return skip(`select:${String(error && error.message)}`);
+    }
+    anchor = { column: range.start, end: range.end, bufferRow };
+    gesture.selecting = true;
+    showChip(labels().copy);
+    placeChip({ column: range.start, bufferRow });
+  };
+  const extendTo = (clientX, clientY) => {
+    const current = cellFromPoint(node, emulator.cols, clientX, clientY, ydisp());
+    if (current === void 0) return;
+    const bufferRow = current.bufferRow;
+    try {
+      if (bufferRow === anchor.bufferRow) {
+        const column = Math.min(Math.max(current.column, 0), emulator.cols - 1);
+        const start2 = Math.min(anchor.column, column);
+        const end = Math.max(anchor.end, column + 1);
+        emulator.select(start2, anchor.bufferRow, end - start2);
+      } else {
+        emulator.selectLines(Math.min(anchor.bufferRow, bufferRow), Math.max(anchor.bufferRow, bufferRow));
+      }
+    } catch {
+      return;
+    }
+    placeChip(selectionStartOf({ column: current.column, bufferRow }));
+  };
+  let start;
+  let dragging = false;
+  let lastSkip;
+  const skipReason = () => lastSkip;
+  const onTouchStart = (event) => {
+    if (isCopyChipTouch(event)) return;
+    clearTimer();
+    start = void 0;
+    dragging = false;
+    if (event.touches.length !== 1) {
+      if (chip !== void 0) dismiss();
+      return;
+    }
+    if (chip !== void 0) dismiss();
+    const touch = event.touches[0];
+    start = { x: touch.clientX, y: touch.clientY };
+    timer = setTimeout(() => {
+      timer = 0;
+      fireLongPress(touch);
+      dragging = gesture.selecting;
+    }, LONG_PRESS_MS);
+  };
+  const onTouchMove = (event) => {
+    if (isCopyChipTouch(event)) return;
+    if (event.touches.length !== 1) {
+      clearTimer();
+      start = void 0;
+      return;
+    }
+    const touch = event.touches[0];
+    if (!dragging) {
+      if (start === void 0) return;
+      const moved = Math.hypot(touch.clientX - start.x, touch.clientY - start.y);
+      if (moved > LONG_PRESS_SLOP_PX) clearTimer();
+      return;
+    }
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+    if (anchor !== void 0) extendTo(touch.clientX, touch.clientY);
+  };
+  const onTouchEnd = () => {
+    clearTimer();
+    start = void 0;
+    if (!dragging) return;
+    dragging = false;
+    gesture.selecting = false;
+  };
+  node.addEventListener("touchstart", onTouchStart, { passive: false, capture: true });
+  node.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
+  node.addEventListener("touchend", onTouchEnd, { passive: false, capture: true });
+  node.addEventListener("touchcancel", onTouchEnd, { passive: false, capture: true });
+  return {
+    skipReason,
+    dispose() {
+      clearTimer();
+      clearFeedback();
+      gesture.selecting = false;
+      removeChip();
+      node.removeEventListener("touchstart", onTouchStart, { capture: true });
+      node.removeEventListener("touchmove", onTouchMove, { capture: true });
+      node.removeEventListener("touchend", onTouchEnd, { capture: true });
+      node.removeEventListener("touchcancel", onTouchEnd, { capture: true });
     }
   };
 }
@@ -10637,6 +11040,13 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
       softKeyboard,
       label: t("title"),
       emulatorRef,
+      // A getter, not frozen strings: the chip must follow a locale change
+      // without reinstalling the gesture handlers.
+      labels: () => ({
+        copy: t("select.copy"),
+        copied: t("select.copied"),
+        copyFailed: t("select.copyFailed")
+      }),
       onTap: () => focusScreen(emulatorRef.current)
     }),
     error === void 0 ? null : React3.createElement("p", { className: "dsh-tm-error", role: "alert" }, t("failed", { message: error })),
@@ -10752,7 +11162,7 @@ function Toolbar({ ui: ui2, prefs, t, softKeyboard, onToggleSoftKeyboard, onTogg
     status === void 0 ? null : React3.createElement("span", { className: "dsh-tm-status", role: "status" }, status)
   );
 }
-function TerminalScreen({ model, state, visible, theme, prefs, softKeyboard, label, emulatorRef, uiState, onTap }) {
+function TerminalScreen({ model, state, visible, theme, prefs, softKeyboard, label, labels, emulatorRef, uiState, onTap }) {
   const hostRef = React3.useRef(null);
   const fitRef = React3.useRef(void 0);
   const paletteRef = React3.useRef(void 0);
@@ -10790,14 +11200,23 @@ function TerminalScreen({ model, state, visible, theme, prefs, softKeyboard, lab
     observer.observe(host);
     const insetTarget = host.closest("[data-sidebar-terminal]") ?? host;
     const keyboard = installKeyboardInset(insetTarget, () => measure());
+    const gesture = { selecting: false };
     const scrolling = installScrollOwnership({
       node: host,
       mode: () => latest.current.prefs.scrollMode,
       target: () => emulator,
       lineHeight: () => measuredRowHeight(emulator),
-      canScroll: () => emulator.buffer.active.length > emulator.rows
+      canScroll: () => emulator.buffer.active.length > emulator.rows,
+      paused: () => gesture.selecting
+    });
+    const selecting = installLongPressCopy({
+      node: host,
+      emulator,
+      gesture,
+      labels
     });
     return () => {
+      selecting.dispose();
       scrolling.dispose();
       keyboard.dispose();
       observer.disconnect();

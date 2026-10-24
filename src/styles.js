@@ -119,6 +119,7 @@ const CSS = `
 }
 
 .dsh-tm-screen {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -147,6 +148,33 @@ const CSS = `
 }
 .dsh-tm-screen .xterm .xterm-rows .xterm-cursor.xterm-cursor-underline {
   border-bottom-color: var(--dsh-tm-cursor, var(--dsw-alias-brand-primary));
+}
+
+/* The long-press Copy chip: absolutely positioned inside the screen host, so
+   it needs an explicit z-index to sit above xterm's canvas layers. */
+.dsh-tm-copychip {
+  position: absolute;
+  z-index: 6;
+  padding: 5px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+.dsh-tm-copychip:active { background: var(--dsw-alias-interactive-bg-active); }
+.dsh-tm-copychip:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
 }
 
 .dsh-tm-keybar {

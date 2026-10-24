@@ -33,10 +33,14 @@ const INERTIA_MIN_VELOCITY = 0.05
  *   - the emulator facade whose line count is driven.
  * @param {() => number} options.lineHeight - measured row height in px.
  * @param {() => boolean} [options.canScroll] - whether the gesture applies now.
+ * @param {() => boolean} [options.paused] - whether a long-press selection owns
+ *   the current gesture; while it does, the screen neither scrolls nor claims
+ *   the touchmove, leaving the selection module to extend the highlight.
  * @returns {{ dispose: () => void }}
  */
 export function installScrollOwnership(options) {
-  const { node, mode, target, lineHeight, canScroll } = options
+  const { node, mode, target, lineHeight, canScroll, paused } = options
+  const isPaused = () => paused !== undefined && paused()
   let active = null
   let remainder = 0
   let inertiaFrame = 0
@@ -102,6 +106,9 @@ export function installScrollOwnership(options) {
     // Capture-phase stopPropagation in BOTH modes: in `page` mode the browser
     // still scrolls (no preventDefault), but xterm's own handlers stay out.
     event.stopPropagation()
+    // A claimed long-press selection extends the highlight instead of moving
+    // the buffer; the selection module consumes the event itself.
+    if (isPaused()) return
     if (mode() !== 'terminal') return
     if (canScroll !== undefined && !canScroll()) return
     const touch = event.touches[0]
@@ -117,6 +124,9 @@ export function installScrollOwnership(options) {
   const onTouchEnd = (event) => {
     active = null
     event.stopPropagation()
+    // A selection drag ends on the same touch; dropping the claimed flag here
+    // hands the next gesture back to scrolling.
+    if (isPaused()) return
     if (mode() !== 'terminal') return
     if (event.cancelable) event.preventDefault()
     startInertia()

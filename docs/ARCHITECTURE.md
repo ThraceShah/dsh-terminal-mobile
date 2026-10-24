@@ -174,10 +174,10 @@ Two testing notes that matter:
 
 - `page.mouse.wheel` in a touch context may not produce a DOM `wheel` event at
   all — use synthetic events and judge consumption by `defaultPrevented`.
-- xterm 6 renders scrollback by **replacing row content**, not by scrolling a DOM
-  element: `.xterm-viewport` and `.xterm-scrollable-element` both keep
+- **xterm 6 renders scrollback by replacing row content, not by scrolling a DOM
+  element**: `.xterm-viewport` and `.xterm-scrollable-element` both keep
   `scrollTop === 0` forever. Assert on the top visible row, not on a scroll
-  offset.
+  offset. (Why it can replace rows at all: see section 14.)
 
 ## 9. Scrollback is an option that arrives late
 
@@ -248,7 +248,65 @@ Termux semantics:
 - **Serving changes.** The bundle is read at startup and cached with a revision;
   restart the server after a rebuild.
 
-## 14. Diagnostic capture
+## 14. Measuring the screen: xterm has two renderers
+
+The first cut of the long-press gesture did the obvious thing —
+`node.querySelector('canvas')`, then divide its box by `cols` to get a column —
+and did nothing at all on a real phone. The gesture looked broken in a way no
+assertion could explain, because every guard was individually reasonable and
+they all failed together.
+
+`test/probe.mjs` printed why. xterm 6 renders through its **accessibility**
+layer here, not a canvas:
+
+```json
+{
+  "canvas": false,
+  "rows": { "childCount": 44, "cls": "xterm-rows" },
+  "first": [{ "cls": "", "aria": null, "height": 15, "html": "<div …><span …> </span></div>" }]
+}
+```
+
+There is no `<canvas>`, the `.xterm-rows` children carry no class, and they
+carry no `aria-rowindex` either — that attribute belongs to xterm's *DOM*
+renderer, a third layout this build does not use. So a hit-test keyed on either
+of the two renderers people usually mean silently returns nothing.
+
+`cellFromPoint` therefore measures both, and picks by what is actually present:
+
+- **No canvas** → the accessibility rows *are* the text. The row box locates the
+  line; columns come from walking the row's text with a `Range` per character,
+  accumulating TEXT length rather than pixels. Counting text is what keeps CJK
+  correct — one character, two columns — where a cell width measured from a
+  Latin glyph would drift by half a column per wide character.
+- **A canvas** → its CSS box is the cell grid, so a column is a fraction of its
+  width. Cheaper, and exact for a monospace Latin grid.
+
+Three consequences worth keeping in view:
+
+- **DOM index is the buffer row, and only because nothing wraps.** A line here
+  is one row of text in one row of buffer, so `ydisp + domIndex` is exact. If a
+  build ever wraps, that mapping is off by one per wrapped line above the
+  viewport, and no assertion in this repo would notice. `ydisp` is therefore an
+  explicit argument to `cellFromPoint` rather than something the module guesses:
+  a caller that knows its renderer wraps supplies the true offset.
+- **`cols <= 0` has to be a stated guard.** The canvas branch catches it by
+  dividing by a zero-width box; the accessibility branch divides text and does
+  not, so a column index of 0 against a grid with no columns would otherwise be
+  accepted.
+- **A silent miss is unactionable.** Every guard returns `undefined` for an
+  ordinary reason — a finger resting between rows, a line the renderer has not
+  laid out. `onMiss` names the guard that fired, published on the host as
+  `data-terminal-mobile-select-skip`, so a failing test reports *which* check
+  declined instead of only that no chip appeared. That attribute is what turned
+  "the gesture is broken" into "there is no canvas".
+
+The lesson generalizes past xterm: probe the real DOM before writing a
+measurement of it, and keep the probe. A feature that measures its host's DOM is
+written against one arrangement of that DOM, and the arrangement is not
+specified anywhere the plugin can read.
+
+## 15. Diagnostic capture
 
 `localStorage['dsh.terminal-mobile.debug'] = '1'` keeps a bounded ring (200) of
 the frames the screen received and exposes it as

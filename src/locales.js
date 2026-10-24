@@ -104,6 +104,9 @@ export const zh = {
   'key.comma': ',',
   'key.dot': '.',
   'key.space': 'Space',
+  'select.copy': '复制',
+  'select.copied': '已复制',
+  'select.copyFailed': '复制失败，请手动选择',
 }
 
 /** English copy. */
@@ -197,4 +200,7 @@ export const en = {
   'key.comma': ',',
   'key.dot': '.',
   'key.space': 'Space',
+  'select.copy': 'Copy',
+  'select.copied': 'Copied',
+  'select.copyFailed': 'Copy failed — select manually',
 }

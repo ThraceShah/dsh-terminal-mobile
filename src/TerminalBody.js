@@ -20,6 +20,7 @@ import { installXtermStyles } from './xterm-styles.js'
 import { TerminalTheme, observeTerminalCursor, paletteOf } from './terminal-engine.js'
 import { applySoftKeyboardGate, focusScreen } from './gate.js'
 import { installScrollOwnership } from './scroll.js'
+import { installLongPressCopy } from './selection.js'
 import { installKeyboardInset } from './viewport.js'
 import { createFrameCapture } from './debug.js'
 import { KeyBar } from './KeyBar.js'
@@ -154,6 +155,13 @@ export function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui })
       softKeyboard,
       label: t('title'),
       emulatorRef,
+      // A getter, not frozen strings: the chip must follow a locale change
+      // without reinstalling the gesture handlers.
+      labels: () => ({
+        copy: t('select.copy'),
+        copied: t('select.copied'),
+        copyFailed: t('select.copyFailed'),
+      }),
       onTap: () => focusScreen(emulatorRef.current),
     }),
     error === undefined
@@ -279,7 +287,7 @@ function Toolbar({ ui, prefs, t, softKeyboard, onToggleSoftKeyboard, onToggleKey
   )
 }
 
-function TerminalScreen({ model, state, visible, theme, prefs, softKeyboard, label, emulatorRef, uiState, onTap }) {
+function TerminalScreen({ model, state, visible, theme, prefs, softKeyboard, label, labels, emulatorRef, uiState, onTap }) {
   const hostRef = React.useRef(null)
   const fitRef = React.useRef(undefined)
   const paletteRef = React.useRef(undefined)
@@ -332,15 +340,27 @@ function TerminalScreen({ model, state, visible, theme, prefs, softKeyboard, lab
     // key bar would still sit behind the keyboard.
     const insetTarget = host.closest('[data-sidebar-terminal]') ?? host
     const keyboard = installKeyboardInset(insetTarget, () => measure())
+    // The long-press selection shares this gesture with scrolling: it claims
+    // the touch (raising `selecting`) only after a hold that did not move past
+    // the slop, and the scroll module stands down while that flag is up.
+    const gesture = { selecting: false }
     const scrolling = installScrollOwnership({
       node: host,
       mode: () => latest.current.prefs.scrollMode,
       target: () => emulator,
       lineHeight: () => measuredRowHeight(emulator),
       canScroll: () => emulator.buffer.active.length > emulator.rows,
+      paused: () => gesture.selecting,
+    })
+    const selecting = installLongPressCopy({
+      node: host,
+      emulator,
+      gesture,
+      labels,
     })
 
     return () => {
+      selecting.dispose()
       scrolling.dispose()
       keyboard.dispose()
       observer.disconnect()

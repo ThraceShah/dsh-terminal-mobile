@@ -47,9 +47,10 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node test/load.mjs && node test/logic.mjs && node test/body.mjs",
+    "test": "node test/load.mjs && node test/logic.mjs && node test/selection.mjs && node test/body.mjs",
     "test:served": "node test/served.mjs",
-    "test:gui": "node test/geometry.mjs"
+    "test:gui": "node test/geometry.mjs",
+    "test:copy": "node test/copy.mjs"
   },
   "license": "MIT",
   "repository": {

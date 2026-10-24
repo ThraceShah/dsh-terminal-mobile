@@ -22,6 +22,9 @@ terminal package) at a lower slot priority, and adds what a phone needs:
   raises it inside the tap's own gesture.
 - **Keyboard-aware layout** — the visual-viewport inset lifts the whole screen
   (key bar included) above the soft keyboard.
+- **Long-press to copy** — a phone's one gesture for grabbing text: hold a word
+  to select it and raise a **Copy** chip, drag to grow the selection, tap the
+  chip to copy.
 
 ## Install
 
@@ -57,7 +60,7 @@ The same spec works in the Web **Plugins → Add plugin** dialog.
 ```bash
 npm install          # esbuild + xterm + react (dev only; nothing is a runtime dep)
 node build.mjs       # writes client.js and client.terminal-mobile.js
-npm test             # load + logic + body (no browser, no server)
+npm test             # load + logic + selection + body (no browser, no server)
 ```
 
 The browser tests need a running `dsh web` — install the plugin into a **fresh
@@ -72,11 +75,22 @@ dsh web --no-open            # prints http://127.0.0.1:3080/?token=...
 node test/served.mjs    <baseUrl> <token>
 node test/geometry.mjs  <baseUrl> <token>
 node test/e2e.mjs       <baseUrl> <token>
+node test/copy.mjs      <baseUrl> <token>
 node test/roundtrip.mjs <baseUrl> <token>
 node test/wrap.mjs      <baseUrl> <token>
 node test/mobile.mjs    <baseUrl> <token>
 node test/capture.mjs   <baseUrl> <token>
 ```
+
+`copy.mjs` is the long-press suite: it holds a word, reads the chip back, and
+checks the clipboard. It grants itself clipboard permission, so it must run
+against a headless Chromium that Playwright started.
+
+`test/probe.mjs` prints what the terminal actually painted — whether a canvas
+exists, how `.xterm-rows` is shaped — rather than asserting anything. It is how
+this plugin found out that its xterm draws through the accessibility renderer
+and not a canvas, which is why the selection module measures two renderers
+instead of one. Run it when a feature that measures the screen misbehaves.
 
 `<token>` is the `?token=` value the server prints on startup. For a server whose
 token you no longer have, pass a ready cookie instead:
@@ -101,7 +115,10 @@ Stored in browser `localStorage` under `dsh.terminal-mobile.v1`:
 }
 ```
 
-The soft-keyboard switch is intentionally **not** persisted.
+The soft-keyboard switch is intentionally **not** persisted. Neither is the
+long-press hold (`LONG_PRESS_MS` in `src/selection.js`): a phone's hold duration
+is a device habit, not a terminal preference, and a setting that moved it would
+be a setting that made selection unreachable for whoever set it too high.
 
 Debug frame capture: `localStorage.setItem('dsh.terminal-mobile.debug', '1')`,
 then read `window.__dshTerminalMobileCapture.frames`.
@@ -115,7 +132,9 @@ client.js                built entry: locale + keyed slot registration
 client.terminal-mobile.js  built chunk: xterm, screen, key bar, editor
 build.mjs                esbuild wrapper (ModuleLoader envelope + inlined xterm CSS)
 src/                     sources
+src/selection.js         long-press selection, the Copy chip, and the two hit-tests
 test/                    Node and browser suites
+test/probe.mjs           renderer probe: prints, asserts nothing
 ```
 
 Architecture notes and the pitfalls this design avoids are in

@@ -132,7 +132,10 @@ var zh = {
   "key.question": "?",
   "key.comma": ",",
   "key.dot": ".",
-  "key.space": "Space"
+  "key.space": "Space",
+  "select.copy": "\u590D\u5236",
+  "select.copied": "\u5DF2\u590D\u5236",
+  "select.copyFailed": "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u62E9"
 };
 var en = {
   title: "Terminal",
@@ -223,7 +226,10 @@ var en = {
   "key.question": "?",
   "key.comma": ",",
   "key.dot": ".",
-  "key.space": "Space"
+  "key.space": "Space",
+  "select.copy": "Copy",
+  "select.copied": "Copied",
+  "select.copyFailed": "Copy failed \u2014 select manually"
 };
 
 // src/ui-state.js
