@@ -12,7 +12,7 @@
  * real xterm are available.
  */
 import { createSuite } from './harness.mjs'
-import { LONG_PRESS_MS, LONG_PRESS_SLOP_PX, cellFromPoint, findRowByBufferRow, isCopyChipTouch, isHandleTouch, isWordCharacter, wordRangeAt, writeToClipboard } from '../src/selection.js'
+import { LONG_PRESS_MS, LONG_PRESS_SLOP_PX, cellFromPoint, cellForDrag, findRowByBufferRow, isCopyChipTouch, isHandleTouch, isWordCharacter, wordRangeAt, writeToClipboard } from '../src/selection.js'
 
 const suite = createSuite('selection')
 
@@ -168,6 +168,28 @@ suite.check('the slop is small enough to feel like a hold', LONG_PRESS_SLOP_PX <
     return cell === undefined ? undefined : { column: cell.column, bufferRow: cell.bufferRow }
   }
   suite.equal('the viewport offset is added to reach the buffer row', scrolled(125, 130), { column: 12, bufferRow: 41 })
+
+  // ── a drag changes rows only past the next row's middle ──────────────────
+  // The fixture's rows are 20px tall: row 0 spans 100–120, row 1 120–140,
+  // row 2 140–160, with middles at 110/130/150. A hand cannot hold a row
+  // boundary, so a finger on row 1 that drifts to 145 — inside row 2's TOP
+  // half — must still be read as row 1; only past 150 does the row change.
+  // Upward is symmetric: 115 stays on row 1, 105 reaches row 0.
+  const dragRowAt = (y, currentRow) => {
+    const cell = cellForDrag(node, 80, 125, y, 0, undefined, currentRow)
+    return cell === undefined ? undefined : cell.bufferRow
+  }
+  suite.equal('a drift into the next row’s top half stays on the current row', dragRowAt(145, 1), 1)
+  suite.equal('a drift past the next row’s middle changes rows', dragRowAt(155, 1), 2)
+  suite.equal('a drift into the previous row’s bottom half stays put', dragRowAt(115, 1), 1)
+  suite.equal('a drift past the previous row’s middle changes rows', dragRowAt(105, 1), 0)
+  suite.equal('a drift within the current row keeps it', dragRowAt(135, 1), 1)
+  // With no current row — the first lookup of a gesture — there is nothing to
+  // be hysteresis about, and the plain row under the finger wins.
+  suite.equal('no current row takes the row under the finger', dragRowAt(145, undefined), 2)
+  // The offset applies to the hysteresis too: the same y on a scrolled screen
+  // is still half a row short of the next row.
+  suite.equal('the hysteresis works in buffer coordinates', cellForDrag(node, 80, 125, 145, 40, undefined, 41)?.bufferRow, 41)
 
   // `findRowByBufferRow` is the same mapping in reverse, and it is what places
   // the chip: a row scrolled out of view simply is not found.

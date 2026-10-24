@@ -10005,7 +10005,7 @@ function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, cache) {
   if (column < 0 || column >= cols) return miss("column");
   return { column, bufferRow: ydisp + target.index, row: target.row };
 }
-function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache) {
+function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache, currentRow) {
   if (!(cols > 0)) return void 0;
   const rows = node.querySelector(".xterm-rows");
   if (rows === null || rows.childElementCount === 0) return void 0;
@@ -10020,18 +10020,40 @@ function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache) {
     const last = rows.children[rows.childElementCount - 1].getBoundingClientRect();
     y = Math.min(Math.max(clientY, first.top), last.bottom);
   }
-  const target = findRowAtPoint(rows, y, cache);
-  if (target === void 0) return void 0;
+  const found = findRowAtPoint(rows, y, cache);
+  if (found === void 0) return void 0;
+  const index = rowWithHysteresis(rows, found, y, currentRow, ydisp, cache);
+  const row = rows.children[index];
   const canvas = node.querySelector("canvas");
   if (canvas === null) {
-    const column2 = columnAtPointInRow(target.row, clientX, cols, cache) ?? geometricColumn(node, rows, clientX, cols);
+    const column2 = columnAtPointInRow(row, clientX, cols, cache) ?? geometricColumn(node, rows, clientX, cols);
     if (column2 === void 0) return void 0;
-    return { column: column2, bufferRow: ydisp + target.index, row: target.row };
+    return { column: column2, bufferRow: ydisp + index, row };
   }
   const grid = canvas.getBoundingClientRect();
   if (grid.width <= 0) return void 0;
   const column = Math.min(Math.max(Math.floor((clientX - grid.left) / grid.width * cols), 0), cols - 1);
-  return { column, bufferRow: ydisp + target.index, row: target.row };
+  return { column, bufferRow: ydisp + index, row };
+}
+function rowWithHysteresis(rows, found, clientY, currentRow, ydisp, cache) {
+  if (currentRow === void 0) return found.index;
+  const from = currentRow - ydisp;
+  if (from === found.index || from < 0 || from >= rows.childElementCount) return found.index;
+  const mid = rowMidOf(rows, found.index, cache);
+  if (mid === void 0) return found.index;
+  const entered = found.index > from ? clientY > mid : clientY < mid;
+  return entered ? found.index : from;
+}
+function rowMidOf(rows, index, cache) {
+  if (cache !== void 0 && cache.container === rows && cache.tops.length === rows.childElementCount) {
+    const top = cache.tops[index];
+    const bottom = cache.bottoms[index];
+    if (bottom - top <= 0) return void 0;
+    return (top + bottom) / 2;
+  }
+  const box = rows.children[index].getBoundingClientRect();
+  if (box.height <= 0) return void 0;
+  return box.top + box.height / 2;
 }
 function geometricColumn(node, rows, clientX, cols) {
   const grid = screenBox(rows, node);
@@ -10171,6 +10193,7 @@ function installLongPressCopy(options) {
   let range;
   let handles;
   let handleDrag;
+  let dragRow;
   let measureCache = createMeasureCache();
   let cachedGeometry;
   let cachedYdisp = 0;
@@ -10190,8 +10213,10 @@ function installLongPressCopy(options) {
     pendingMove = void 0;
     if (point === void 0) return;
     syncGestureCache();
-    const current = cellForDrag(node, emulator.cols, point.clientX, point.clientY, ydisp(), measureCache);
-    if (current !== void 0) moveTo(point.end, current);
+    const current = cellForDrag(node, emulator.cols, point.clientX, point.clientY, ydisp(), measureCache, dragRow);
+    if (current === void 0) return;
+    dragRow = current.bufferRow;
+    moveTo(point.end, current);
   };
   const scheduleMove = (end, clientX, clientY) => {
     pendingMove = { end, clientX, clientY };
@@ -10381,6 +10406,7 @@ function installLongPressCopy(options) {
     if (!hasSelection()) return;
     beginGesture();
     handleDrag = end;
+    dragRow = (end === "start" ? range.start : range.end).bufferRow;
     gesture.selecting = true;
     handle.setPointerCapture?.(event.pointerId);
     const move = (moveEvent) => {
@@ -10488,6 +10514,7 @@ function installLongPressCopy(options) {
       // Exclusive, so a one-character word ends on the next column.
       end: { column: word.end, bufferRow }
     };
+    dragRow = bufferRow;
     gesture.selecting = true;
     showChip(labels().copy);
     placeChip(range.start);

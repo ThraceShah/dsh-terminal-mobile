@@ -199,6 +199,9 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, c
  *   selection instead of freezing it.
  * - text past its own end keeps its geometric column — see
  *   `columnAtPointInRow`.
+ * - the ROW changes only once the finger passes the middle of the destination
+ *   row — see `rowWithHysteresis`. A hand cannot hold a row boundary; half a
+ *   row of give is the redundancy it needs.
  *
  * The long-press path keeps the strict `cellFromPoint`: a press outside the
  * text should select nothing, not the nearest line.
@@ -209,9 +212,10 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, c
  * @param {number} clientY
  * @param {number} [ydisp] - the buffer row at the top of the viewport.
  * @param {ReturnType<typeof createMeasureCache>} [cache] - a per-gesture cache, so a drag measures once.
+ * @param {number} [currentRow] - the buffer row the drag is currently on, for the row-change hysteresis.
  * @returns {{column: number, bufferRow: number, row: HTMLElement} | undefined}
  */
-export function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache) {
+export function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache, currentRow) {
   if (!(cols > 0)) return undefined
   const rows = node.querySelector('.xterm-rows')
   if (rows === null || rows.childElementCount === 0) return undefined
@@ -226,19 +230,72 @@ export function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache) {
     const last = rows.children[rows.childElementCount - 1].getBoundingClientRect()
     y = Math.min(Math.max(clientY, first.top), last.bottom)
   }
-  const target = findRowAtPoint(rows, y, cache)
-  if (target === undefined) return undefined
+  const found = findRowAtPoint(rows, y, cache)
+  if (found === undefined) return undefined
+  const index = rowWithHysteresis(rows, found, y, currentRow, ydisp, cache)
+  const row = rows.children[index]
   const canvas = node.querySelector('canvas')
   if (canvas === null) {
     // No canvas: the accessibility renderer, whose row elements ARE the text.
-    const column = columnAtPointInRow(target.row, clientX, cols, cache) ?? geometricColumn(node, rows, clientX, cols)
+    const column = columnAtPointInRow(row, clientX, cols, cache) ?? geometricColumn(node, rows, clientX, cols)
     if (column === undefined) return undefined
-    return { column, bufferRow: ydisp + target.index, row: target.row }
+    return { column, bufferRow: ydisp + index, row }
   }
   const grid = canvas.getBoundingClientRect()
   if (grid.width <= 0) return undefined
   const column = Math.min(Math.max(Math.floor(((clientX - grid.left) / grid.width) * cols), 0), cols - 1)
-  return { column, bufferRow: ydisp + target.index, row: target.row }
+  return { column, bufferRow: ydisp + index, row }
+}
+
+/**
+ * Which row a drag is actually on: the current one, or the one under it.
+ *
+ * A plain lookup flips rows the instant the finger crosses a boundary —
+ * sub-pixel twitch included. For a drag aimed along a line whose finger drifts
+ * a few pixels down, that means the selection hops to the next row and back:
+ * the highlight flickers between lines and a copy picks up a stray one. The
+ * row therefore changes only once the finger passes the MIDDLE of the
+ * destination row — half a row of give, symmetric for up and down, which is
+ * the redundancy a hand holding a line actually needs. Short of the middle,
+ * the drag is still on the row it came from.
+ *
+ * @param {HTMLElement} rows - the `.xterm-rows` container.
+ * @param {{row: HTMLElement, index: number}} found - the row a plain lookup finds.
+ * @param {number} clientY - the clamped y of the finger.
+ * @param {number} [currentRow] - the buffer row the drag is currently on.
+ * @param {number} ydisp - the buffer row at the top of the viewport.
+ * @param {ReturnType<typeof createMeasureCache>} [cache]
+ * @returns {number} the DOM index to use.
+ */
+function rowWithHysteresis(rows, found, clientY, currentRow, ydisp, cache) {
+  if (currentRow === undefined) return found.index
+  const from = currentRow - ydisp
+  if (from === found.index || from < 0 || from >= rows.childElementCount) return found.index
+  const mid = rowMidOf(rows, found.index, cache)
+  if (mid === undefined) return found.index
+  // Down: the destination row is entered past its middle. Up: left before it.
+  const entered = found.index > from ? clientY > mid : clientY < mid
+  return entered ? found.index : from
+}
+
+/**
+ * The vertical middle of a row, from the gesture's boxes when it has them.
+ *
+ * @param {HTMLElement} rows
+ * @param {number} index
+ * @param {ReturnType<typeof createMeasureCache>} [cache]
+ * @returns {number | undefined} the midpoint, or `undefined` for a row with no height.
+ */
+function rowMidOf(rows, index, cache) {
+  if (cache !== undefined && cache.container === rows && cache.tops.length === rows.childElementCount) {
+    const top = cache.tops[index]
+    const bottom = cache.bottoms[index]
+    if (bottom - top <= 0) return undefined
+    return (top + bottom) / 2
+  }
+  const box = rows.children[index].getBoundingClientRect()
+  if (box.height <= 0) return undefined
+  return box.top + box.height / 2
 }
 
 /**
@@ -548,6 +605,12 @@ export function installLongPressCopy(options) {
   /** Which end a grip is moving while its pointer is down, else `undefined`. */
   let handleDrag
   /**
+   * The buffer row the drag is currently on, for the half-row hysteresis in
+   * `cellForDrag`. `undefined` before the first move of a gesture — a lookup
+   * with no current row simply takes the row under the finger.
+   */
+  let dragRow
+  /**
    * Measurements taken at the start of the current gesture.
    *
    * A drag re-reads the same boxes on every pointer event; each read is a
@@ -607,9 +670,12 @@ export function installLongPressCopy(options) {
     syncGestureCache()
     // The drag variant of the hit test: a finger that drifts onto an empty
     // row or off the screen edge must keep extending the selection, not
-    // freeze it — see `cellForDrag`.
-    const current = cellForDrag(node, emulator.cols, point.clientX, point.clientY, ydisp(), measureCache)
-    if (current !== undefined) moveTo(point.end, current)
+    // freeze it — and the row changes only past the next row's middle, so a
+    // finger holding a line does not flicker across it — see `cellForDrag`.
+    const current = cellForDrag(node, emulator.cols, point.clientX, point.clientY, ydisp(), measureCache, dragRow)
+    if (current === undefined) return
+    dragRow = current.bufferRow
+    moveTo(point.end, current)
   }
 
   const scheduleMove = (end, clientX, clientY) => {
@@ -982,6 +1048,9 @@ export function installLongPressCopy(options) {
     // A new gesture: whatever the last one measured no longer applies.
     beginGesture()
     handleDrag = end
+    // The row the drag starts on: the hysteresis in `cellForDrag` needs it
+    // before the first move, and no swap can have happened yet.
+    dragRow = (end === 'start' ? range.start : range.end).bufferRow
     gesture.selecting = true
     handle.setPointerCapture?.(event.pointerId)
     const move = (moveEvent) => {
@@ -1173,6 +1242,9 @@ export function installLongPressCopy(options) {
       // Exclusive, so a one-character word ends on the next column.
       end: { column: word.end, bufferRow },
     }
+    // The initial moving end is the word's own row — the hysteresis needs it
+    // before the first extension of the gesture.
+    dragRow = bufferRow
     gesture.selecting = true
     showChip(labels().copy)
     placeChip(range.start)

@@ -450,19 +450,22 @@ try {
         column += value.length
       }
       if (first === undefined || !pitch) return undefined
-      return { firstLeft: first.left, pitch, rowTop: first.top, rowHeight: first.height }
+      // The ROW's own box, not the glyph's: the row-change hysteresis
+      // measures the row's middle, and a drop point must land clearly past it
+      // or the drag stays on the row it came from.
+      const rowBox = row.getBoundingClientRect()
+      return { firstLeft: first.left, pitch, rowBoxTop: rowBox.top, rowBoxHeight: rowBox.height }
     }
     return undefined
   }, SECOND)
   suite.check('the second line is on screen', second !== undefined, JSON.stringify(second))
 
-  // Drag the END grip from the marker down to column 2 of the next row. The
-  // grip box is 44px with the dot centred, so pressing its centre and moving
-  // to the drop point drives the real pointer path.
+  // Drag the END grip from the marker down to column 2 of the next row.
   // `1.5 * pitch` lands on the second glyph's centre, so the end grip names
   // column 1 and the exclusive end is column 2: the drag copies exactly the
-  // first two cells of the row below.
-  const drop = { x: second.firstLeft + 1.5 * second.pitch, y: second.rowTop + second.rowHeight / 2 }
+  // first two cells of the row below. The y sits three-quarters down the row —
+  // past its middle, which is where a drag counts as having changed rows.
+  const drop = { x: second.firstLeft + 1.5 * second.pitch, y: second.rowBoxTop + second.rowBoxHeight * 0.75 }
   const endBox = liveGrips[1]
   const gripCentre = { x: endBox.left + endBox.width / 2, y: endBox.top + endBox.height / 2 }
   // Dispatch the drag as pointer events on the grip itself, the same way the
