@@ -82,6 +82,29 @@ export function wordRangeAt(line, column) {
 }
 
 /**
+ * A per-gesture cache of the measurements a drag repeats.
+ *
+ * Every one of these numbers is a forced layout: a `getBoundingClientRect` or
+ * a Range measurement, which the browser must resolve against the pending
+ * style writes before answering. Doing them per `pointermove` is what made the
+ * grips feel lagged — a drag at 120Hz re-measured up to 44 row boxes and as
+ * many glyph boxes per event, each one interleaved with the style writes of the
+ * last, so the page never stopped reflowing.
+ *
+ * A gesture is the safe lifetime for a cache: while a finger is down the screen
+ * cannot scroll (the scroll module stands down for a claimed gesture), so the
+ * boxes measured at the start are still true at the end. Rows are keyed by
+ * element because the accessibility renderer reuses row nodes across scrolls —
+ * a cache that outlived a gesture would answer with a position the row no
+ * longer occupies.
+ *
+ * @returns {{container: HTMLElement | undefined, tops: number[], bottoms: number[], glyphs: Map<HTMLElement, {boxes: Array<{left: number, right: number, visible: boolean}>, length: number, pitch: number | undefined}>}} a cache to pass to the measurement helpers.
+ */
+export function createMeasureCache() {
+  return { container: undefined, tops: [], bottoms: [], glyphs: new Map() }
+}
+
+/**
  * The cell under a client point, in visible-grid terms.
  *
  * xterm renders either to a canvas or — as it does under this plugin, with the
@@ -120,9 +143,10 @@ export function wordRangeAt(line, column) {
  * @param {number} clientY
  * @param {number} [ydisp] - the buffer row at the top of the viewport.
  * @param {(guard: string) => void} [onMiss] - reports the guard that rejected the point.
+ * @param {ReturnType<typeof createMeasureCache>} [cache] - a per-gesture cache, so a drag measures once.
  * @returns {{column: number, bufferRow: number, row: HTMLElement} | undefined}
  */
-export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
+export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, cache) {
   const miss = (guard) => {
     onMiss?.(guard)
     return undefined
@@ -134,7 +158,7 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
   if (!(cols > 0)) return miss('cols')
   const rows = node.querySelector('.xterm-rows')
   if (rows === null) return miss('rows')
-  const target = findRowAtPoint(rows, clientY)
+  const target = findRowAtPoint(rows, clientY, cache)
   if (target === undefined) return miss('row')
   const canvas = node.querySelector('canvas')
   if (canvas === null) {
@@ -142,7 +166,7 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
     // Their box gives the line; only the columns need measuring, and they are
     // measured from the text itself so that CJK — two columns to one
     // character — lands on the right cell.
-    const column = columnAtPointInRow(target.row, clientX, cols)
+    const column = columnAtPointInRow(target.row, clientX, cols, cache)
     if (column === undefined) return miss('column')
     return { column, bufferRow: ydisp + target.index, row: target.row }
   }
@@ -166,15 +190,27 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
  * @param {number} clientY
  * @returns {{row: HTMLElement, index: number} | undefined}
  */
-function findRowAtPoint(rows, clientY) {
+function findRowAtPoint(rows, clientY, cache) {
   const children = rows.children
+  if (cache !== undefined && cache.container !== rows) {
+    // First measurement of this container for this gesture: read every row box
+    // once, and let the rest of the gesture answer by arithmetic.
+    cache.container = rows
+    cache.tops = []
+    cache.bottoms = []
+    for (let index = 0; index < children.length; index += 1) {
+      const box = children[index].getBoundingClientRect()
+      cache.tops.push(box.top)
+      cache.bottoms.push(box.bottom)
+    }
+  }
   for (let index = 0; index < children.length; index += 1) {
-    const row = children[index]
-    const box = row.getBoundingClientRect()
-    if (box.height <= 0) continue
+    const top = cache === undefined ? children[index].getBoundingClientRect().top : cache.tops[index]
+    const bottom = cache === undefined ? children[index].getBoundingClientRect().bottom : cache.bottoms[index]
+    if (bottom - top <= 0) continue
     // Bottom-inclusive so a finger on a row seam resolves to the lower row.
-    if (clientY < box.top || clientY > box.bottom) continue
-    return { row, index }
+    if (clientY < top || clientY > bottom) continue
+    return { row: children[index], index }
   }
   return undefined
 }
@@ -193,10 +229,46 @@ function findRowAtPoint(rows, clientY) {
  * @param {number} cols
  * @returns {number | undefined}
  */
-export function columnAtPointInRow(row, clientX, cols) {
-  const walker = row.ownerDocument.createTreeWalker(row, 4 /* NodeFilter.SHOW_TEXT */)
-  let column = 0
+export function columnAtPointInRow(row, clientX, cols, cache) {
+  const measured = glyphBoxesOf(row, cache)
+  if (measured === undefined) return undefined
+  const boxes = measured.boxes
   let lastColumn
+  for (let index = 0; index < boxes.length; index += 1) {
+    const box = boxes[index]
+    if (box.visible) lastColumn = index
+    // Left of this glyph means the finger is in the gap before it, or past
+    // the end of the last span that had a box: the previous column is the hit.
+    if (clientX < box.left) return lastColumn ?? 0
+    if (clientX <= box.right) return index
+  }
+  // Past the last glyph: a row is padded out to the grid, so this is still the
+  // row the finger is on and the column clamps to the last cell.
+  if (measured.length === 0) return undefined
+  return Math.min(lastColumn ?? measured.length - 1, Math.max(cols - 1, 0))
+}
+
+/**
+ * A row's glyph boxes, measured once per gesture.
+ *
+ * A Range per character is the only way to read a cell's box: a row is one
+ * text node, so `textContent` gives no boxes at all. That walk is the single
+ * most expensive thing a drag does — one layout read per character of the row
+ * — so its result is cached per row for the length of the gesture, and the
+ * `pitch` the grips are placed with falls out of the same walk for free.
+ *
+ * @param {HTMLElement} row
+ * @param {ReturnType<typeof createMeasureCache>} [cache]
+ * @returns {{boxes: Array<{left: number, right: number, visible: boolean}>, length: number, pitch: number | undefined} | undefined}
+ */
+function glyphBoxesOf(row, cache) {
+  const cached = cache?.glyphs.get(row)
+  if (cached !== undefined) return cached
+  const walker = row.ownerDocument.createTreeWalker(row, 4 /* NodeFilter.SHOW_TEXT */)
+  const boxes = []
+  let length = 0
+  let pitch
+  let previous
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     const text = node.textContent ?? ''
     if (text.length === 0) continue
@@ -206,25 +278,22 @@ export function columnAtPointInRow(row, clientX, cols) {
       range.setStart(node, offset)
       range.setEnd(node, offset + 1)
       const box = range.getBoundingClientRect()
-      if (box.width > 0 || box.height > 0) lastColumn = column + offset
-      // Left of this glyph means the finger is in the gap before it, or past
-      // the end of the last span that had a box: the previous column is the hit.
-      if (clientX < box.left) {
-        range.detach()
-        return lastColumn ?? 0
-      }
-      if (clientX <= box.right) {
-        range.detach()
-        return column + offset
+      const visible = box.width > 0 || box.height > 0
+      boxes.push({ left: box.left, right: box.right, visible })
+      // The pitch is the distance between two neighbouring visible glyphs —
+      // the same measurement the browser suite uses, and the only one that
+      // includes the letter-spacing the rows carry.
+      if (visible) {
+        if (previous !== undefined && pitch === undefined && box.left > previous) pitch = box.left - previous
+        previous = box.left
       }
     }
     range.detach()
-    column += text.length
+    length += text.length
   }
-  // Past the last glyph: a row is padded out to the grid, so this is still the
-  // row the finger is on and the column clamps to the last cell.
-  if (column === 0) return undefined
-  return Math.min(lastColumn ?? column - 1, Math.max(cols - 1, 0))
+  const measured = { boxes, length, pitch }
+  if (cache !== undefined) cache.glyphs.set(row, measured)
+  return measured
 }
 
 /**
@@ -364,6 +433,85 @@ export function installLongPressCopy(options) {
   let handles
   /** Which end a grip is moving while its pointer is down, else `undefined`. */
   let handleDrag
+  /**
+   * Measurements taken at the start of the current gesture.
+   *
+   * A drag re-reads the same boxes on every pointer event; each read is a
+   * forced layout, and doing them per event is what made the grips lag behind
+   * the finger. The cache is dropped when a new gesture begins — the screen
+   * may have scrolled or resized between them, and a stale box would put a
+   * grip on a cell the finger never touched.
+   */
+  let measureCache = createMeasureCache()
+  /** Host and grid geometry for the current gesture; `undefined` when stale. */
+  let cachedGeometry
+  /** The `ydisp` the cache was built for; a move means the rows reflowed. */
+  let cachedYdisp = 0
+
+  /** Start measuring afresh: the screen may have moved since the last gesture. */
+  const beginGesture = () => {
+    measureCache = createMeasureCache()
+    cachedGeometry = undefined
+    cachedYdisp = ydisp()
+  }
+
+  /**
+   * Drop the cache if output reflowed the rows under a live drag.
+   *
+   * Output can arrive mid-drag — a running process keeps printing — and the
+   * rows it scrolls or rewraps invalidate every box measured at gesture start.
+   * Both signals are O(1) reads off the buffer and the container, so a drag
+   * pays nothing for the check on the frames where nothing moved.
+   */
+  const syncGestureCache = () => {
+    const rows = node.querySelector('.xterm-rows')
+    if (ydisp() !== cachedYdisp || rows === null || measureCache.tops.length !== rows.childElementCount) beginGesture()
+  }
+
+  /**
+   * The move to apply on the next frame, and the frame that will apply it.
+   *
+   * A phone samples its touchscreen at 120–240Hz, so one painted frame
+   * receives two to four pointer events. Applying each one runs xterm's
+   * `select()` — a redraw of the highlight layer — plus a full pass of chip
+   * and grip placement: two to four complete updates for the one frame the
+   * screen can actually show, and a pipeline that falls further behind the
+   * faster the finger moves. That backlog is the lag a finger feels.
+   *
+   * Coalescing to one application per frame caps the whole path at the
+   * display's own rate. The points between frames are dropped deliberately:
+   * their only effect is a selection the next point would extend anyway, and
+   * it would never have been painted.
+   */
+  let frameRequest = 0
+  let pendingMove
+
+  const applyPendingMove = () => {
+    const point = pendingMove
+    pendingMove = undefined
+    if (point === undefined) return
+    syncGestureCache()
+    const current = cellFromPoint(node, emulator.cols, point.clientX, point.clientY, ydisp(), undefined, measureCache)
+    if (current !== undefined) moveTo(point.end, current)
+  }
+
+  const scheduleMove = (end, clientX, clientY) => {
+    pendingMove = { end, clientX, clientY }
+    if (frameRequest !== 0) return
+    frameRequest = requestAnimationFrame(() => {
+      frameRequest = 0
+      applyPendingMove()
+    })
+  }
+
+  /** Apply the point under the finger now: a release must not lag a frame. */
+  const flushMove = () => {
+    if (frameRequest !== 0) {
+      cancelAnimationFrame(frameRequest)
+      frameRequest = 0
+    }
+    applyPendingMove()
+  }
 
   /** Whether there is a selection to adjust or copy. */
   const hasSelection = () => range !== undefined
@@ -457,19 +605,24 @@ export function installLongPressCopy(options) {
    * @returns {{left: number, gridLeft: number, top: number, width: number, cellWidth: number} | undefined}
    */
   const hostGeometry = () => {
+    // Cached for the gesture: the host and grid do not move while a finger is
+    // down, and reading them per placement adds two more forced layouts to
+    // every position update.
+    if (cachedGeometry !== undefined) return cachedGeometry
     const rows = node.querySelector('.xterm-rows')
     if (rows === null || rows.childElementCount === 0) return undefined
     const gridBox = screenBox(rows, node)
     if (gridBox === undefined) return undefined
     const hostBox = node.getBoundingClientRect()
     if (hostBox.width <= 0) return undefined
-    return {
+    cachedGeometry = {
       left: hostBox.left,
       gridLeft: gridBox.left,
       top: hostBox.top,
       width: hostBox.width,
       cellWidth: gridBox.width / emulator.cols,
     }
+    return cachedGeometry
   }
 
   /**
@@ -488,7 +641,9 @@ export function installLongPressCopy(options) {
    * the rows carry, so it under-reports by roughly one pixel over thirty
    * columns and drifts a whole cell by the end of a normal command line.
    *
-   * The rows carry the truth, and `pitchFromRow` reads it. This is only the
+   * The rows carry the truth, and `glyphBoxesOf` reads it — the same walk also
+   * measures each glyph, so the pitch falls out of the gesture's one cached
+   * pass over the row. This is only the
    * fallback for a row with fewer than two glyphs — a freshly cleared screen,
    * or a terminal that has not painted yet — where there is no pitch to read
    * and the probe's small error is the better of the two.
@@ -497,7 +652,7 @@ export function installLongPressCopy(options) {
    * @returns {number | undefined} the cell pitch, or `undefined` before layout.
    */
   const measureCellWidth = (row) => {
-    const fromRow = pitchFromRow(row)
+    const fromRow = glyphBoxesOf(row, measureCache)?.pitch
     if (fromRow !== undefined) return fromRow
     const probe = node.querySelector('.xterm-char-measure-element')
     if (probe === null) return undefined
@@ -507,43 +662,6 @@ export function installLongPressCopy(options) {
     // populated yet reports a plausible-looking zero.
     if (text.length === 0 || width <= 0) return undefined
     return width / text.length
-  }
-
-  /**
-   * The distance between two neighbouring glyphs in a row.
-   *
-   * A Range per character is the only way to read a cell's box: a row is one
-   * text node, so `textContent` gives no boxes at all. The first glyph with a
-   * box after the first glyph is the pitch — its left edge minus its
-   * neighbour's — which is the same measurement the browser suite uses.
-   *
-   * @param {HTMLElement} row
-   * @returns {number | undefined} the cell pitch, or `undefined` for a row of one glyph.
-   */
-  const pitchFromRow = (row) => {
-    if (row === undefined || row === null) return undefined
-    const walker = row.ownerDocument.createTreeWalker(row, 4 /* NodeFilter.SHOW_TEXT */)
-    let previous
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      const text = node.textContent ?? ''
-      if (text.length === 0) continue
-      const range = row.ownerDocument.createRange()
-      range.selectNodeContents(node)
-      for (let offset = 0; offset < text.length; offset += 1) {
-        range.setStart(node, offset)
-        range.setEnd(node, offset + 1)
-        const box = range.getBoundingClientRect()
-        if (box.width <= 0) continue
-        if (previous !== undefined && box.left > previous.left) {
-          const pitch = box.left - previous.left
-          range.detach()
-          return pitch
-        }
-        previous = box
-      }
-      range.detach()
-    }
-    return undefined
   }
 
   /**
@@ -560,18 +678,32 @@ export function installLongPressCopy(options) {
     const geometry = hostGeometry()
     if (geometry === undefined) return undefined
     const rows = node.querySelector('.xterm-rows')
+    const index = bufferRow - ydisp()
     const row = findRowByBufferRow(rows, bufferRow, ydisp())
     if (row === undefined) return undefined
-    const rowBox = row.getBoundingClientRect()
+    // The row's own box is one more forced layout per placement; the gesture
+    // cache already holds it whenever the hit-test ran for this container, and
+    // it is stale only if the terminal reflowed — which the caller rules out
+    // by dropping the cache when `ydisp` moves under a live drag.
+    let top
+    let height
+    if (measureCache.container === rows) {
+      top = measureCache.tops[index]
+      height = measureCache.bottoms[index] - top
+    } else {
+      const rowBox = row.getBoundingClientRect()
+      top = rowBox.top
+      height = rowBox.height
+    }
     const cellWidth = measureCellWidth(row) ?? geometry.cellWidth
     return {
       // The grid is inset by the host's padding, and a column index is an
       // offset from the grid — not from the host. Anchoring at zero put every
       // column a padding-width to the left of the glyph it names.
       left: geometry.gridLeft - geometry.left,
-      top: rowBox.top - geometry.top,
+      top: top - geometry.top,
       width: geometry.width,
-      height: rowBox.height,
+      height,
       cellWidth,
     }
   }
@@ -686,6 +818,21 @@ export function installLongPressCopy(options) {
     const ordered = forward
       ? { start: { column: anchor.column, bufferRow: anchor.bufferRow }, end: { column: moving.column + 1, bufferRow: moving.bufferRow } }
       : { start: { column: moving.column, bufferRow: moving.bufferRow }, end: { column: anchor.column, bufferRow: anchor.bufferRow } }
+    // A finger sweeps through many pointer events per cell, and every one that
+    // lands on the cell the selection already covers would otherwise re-run
+    // xterm's `select()` — a full redraw of the highlight layer — plus the
+    // chip and grip placement after it. The selection only changes when the
+    // cell does, so nothing else has any effect.
+    const before = range
+    if (
+      before !== undefined &&
+      ordered.start.column === before.start.column &&
+      ordered.start.bufferRow === before.start.bufferRow &&
+      ordered.end.column === before.end.column &&
+      ordered.end.bufferRow === before.end.bufferRow
+    ) {
+      return
+    }
     range = ordered
     try {
       // Across rows the linear span already reaches the end's cell; on one row
@@ -715,6 +862,8 @@ export function installLongPressCopy(options) {
     event.preventDefault()
     event.stopPropagation()
     if (!hasSelection()) return
+    // A new gesture: whatever the last one measured no longer applies.
+    beginGesture()
     handleDrag = end
     gesture.selecting = true
     handle.setPointerCapture?.(event.pointerId)
@@ -722,10 +871,12 @@ export function installLongPressCopy(options) {
       if (handleDrag === undefined) return
       if (moveEvent.cancelable) moveEvent.preventDefault()
       moveEvent.stopPropagation()
-      const current = cellFromPoint(node, emulator.cols, moveEvent.clientX, moveEvent.clientY, ydisp())
-      if (current !== undefined) moveTo(handleDrag, current)
+      scheduleMove(end, moveEvent.clientX, moveEvent.clientY)
     }
     const finish = () => {
+      // The release lands exactly where the finger lifted, without waiting a
+      // frame: the grip must not stop one cell short of the last touch.
+      flushMove()
       handleDrag = undefined
       gesture.selecting = false
       handle.removeEventListener('pointermove', move)
@@ -845,7 +996,9 @@ export function installLongPressCopy(options) {
   const fireLongPress = (touch) => {
     lastSkip = undefined
     node.removeAttribute('data-terminal-mobile-select-skip')
-    const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip)
+    // Output can arrive during the hold; the boxes are as fresh as the check.
+    syncGestureCache()
+    const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip, measureCache)
     if (cell === undefined) return
     const bufferRow = cell.bufferRow
     const line = lineAt(bufferRow)
@@ -886,6 +1039,10 @@ export function installLongPressCopy(options) {
   const onTouchStart = (event) => {
     if (isCopyChipTouch(event)) return
     if (isHandleTouch(event)) return
+    // A new press may follow a scroll or output; measure this gesture's boxes
+    // from here. (A chip or grip press skips this on purpose: their selection
+    // was measured moments ago and nothing has moved since.)
+    beginGesture()
     clearTimer()
     start = undefined
     dragging = false
@@ -925,8 +1082,7 @@ export function installLongPressCopy(options) {
     // The gesture is claimed: keep the scroll module and the page out of it.
     if (event.cancelable) event.preventDefault()
     event.stopPropagation()
-    const current = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp())
-    if (current !== undefined) moveTo('end', current)
+    scheduleMove('end', touch.clientX, touch.clientY)
   }
 
   const onTouchEnd = () => {
@@ -934,6 +1090,8 @@ export function installLongPressCopy(options) {
     start = undefined
     if (!dragging) return
     dragging = false
+    // The highlight ends exactly where the finger lifted.
+    flushMove()
     // Released: the highlight stays until the next press, but the next gesture
     // belongs to scrolling again.
     gesture.selecting = false
@@ -949,6 +1107,10 @@ export function installLongPressCopy(options) {
     dispose() {
       clearTimer()
       clearFeedback()
+      if (frameRequest !== 0) {
+        cancelAnimationFrame(frameRequest)
+        frameRequest = 0
+      }
       gesture.selecting = false
       removeChip()
       removeHandles()

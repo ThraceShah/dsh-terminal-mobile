@@ -9979,7 +9979,10 @@ function wordRangeAt(line, column) {
   while (end < line.length && isWordCharacter(line[end])) end += 1;
   return { start, end };
 }
-function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
+function createMeasureCache() {
+  return { container: void 0, tops: [], bottoms: [], glyphs: /* @__PURE__ */ new Map() };
+}
+function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, cache) {
   const miss = (guard) => {
     onMiss?.(guard);
     return void 0;
@@ -9988,11 +9991,11 @@ function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
   if (!(cols > 0)) return miss("cols");
   const rows = node.querySelector(".xterm-rows");
   if (rows === null) return miss("rows");
-  const target = findRowAtPoint(rows, clientY);
+  const target = findRowAtPoint(rows, clientY, cache);
   if (target === void 0) return miss("row");
   const canvas = node.querySelector("canvas");
   if (canvas === null) {
-    const column2 = columnAtPointInRow(target.row, clientX, cols);
+    const column2 = columnAtPointInRow(target.row, clientX, cols, cache);
     if (column2 === void 0) return miss("column");
     return { column: column2, bufferRow: ydisp + target.index, row: target.row };
   }
@@ -10002,25 +10005,53 @@ function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss) {
   if (column < 0 || column >= cols) return miss("column");
   return { column, bufferRow: ydisp + target.index, row: target.row };
 }
-function findRowAtPoint(rows, clientY) {
+function findRowAtPoint(rows, clientY, cache) {
   const children = rows.children;
+  if (cache !== void 0 && cache.container !== rows) {
+    cache.container = rows;
+    cache.tops = [];
+    cache.bottoms = [];
+    for (let index = 0; index < children.length; index += 1) {
+      const box = children[index].getBoundingClientRect();
+      cache.tops.push(box.top);
+      cache.bottoms.push(box.bottom);
+    }
+  }
   for (let index = 0; index < children.length; index += 1) {
-    const row = children[index];
-    const box = row.getBoundingClientRect();
-    if (box.height <= 0) continue;
-    if (clientY < box.top || clientY > box.bottom) continue;
-    return { row, index };
+    const top = cache === void 0 ? children[index].getBoundingClientRect().top : cache.tops[index];
+    const bottom = cache === void 0 ? children[index].getBoundingClientRect().bottom : cache.bottoms[index];
+    if (bottom - top <= 0) continue;
+    if (clientY < top || clientY > bottom) continue;
+    return { row: children[index], index };
   }
   return void 0;
 }
-function columnAtPointInRow(row, clientX, cols) {
+function columnAtPointInRow(row, clientX, cols, cache) {
+  const measured = glyphBoxesOf(row, cache);
+  if (measured === void 0) return void 0;
+  const boxes = measured.boxes;
+  let lastColumn;
+  for (let index = 0; index < boxes.length; index += 1) {
+    const box = boxes[index];
+    if (box.visible) lastColumn = index;
+    if (clientX < box.left) return lastColumn ?? 0;
+    if (clientX <= box.right) return index;
+  }
+  if (measured.length === 0) return void 0;
+  return Math.min(lastColumn ?? measured.length - 1, Math.max(cols - 1, 0));
+}
+function glyphBoxesOf(row, cache) {
+  const cached = cache?.glyphs.get(row);
+  if (cached !== void 0) return cached;
   const walker = row.ownerDocument.createTreeWalker(
     row,
     4
     /* NodeFilter.SHOW_TEXT */
   );
-  let column = 0;
-  let lastColumn;
+  const boxes = [];
+  let length = 0;
+  let pitch;
+  let previous;
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     const text = node.textContent ?? "";
     if (text.length === 0) continue;
@@ -10030,21 +10061,19 @@ function columnAtPointInRow(row, clientX, cols) {
       range.setStart(node, offset);
       range.setEnd(node, offset + 1);
       const box = range.getBoundingClientRect();
-      if (box.width > 0 || box.height > 0) lastColumn = column + offset;
-      if (clientX < box.left) {
-        range.detach();
-        return lastColumn ?? 0;
-      }
-      if (clientX <= box.right) {
-        range.detach();
-        return column + offset;
+      const visible = box.width > 0 || box.height > 0;
+      boxes.push({ left: box.left, right: box.right, visible });
+      if (visible) {
+        if (previous !== void 0 && pitch === void 0 && box.left > previous) pitch = box.left - previous;
+        previous = box.left;
       }
     }
     range.detach();
-    column += text.length;
+    length += text.length;
   }
-  if (column === 0) return void 0;
-  return Math.min(lastColumn ?? column - 1, Math.max(cols - 1, 0));
+  const measured = { boxes, length, pitch };
+  if (cache !== void 0) cache.glyphs.set(row, measured);
+  return measured;
 }
 function findRowByBufferRow(rows, bufferRow, ydisp = 0) {
   const index = bufferRow - ydisp;
@@ -10101,6 +10130,43 @@ function installLongPressCopy(options) {
   let range;
   let handles;
   let handleDrag;
+  let measureCache = createMeasureCache();
+  let cachedGeometry;
+  let cachedYdisp = 0;
+  const beginGesture = () => {
+    measureCache = createMeasureCache();
+    cachedGeometry = void 0;
+    cachedYdisp = ydisp();
+  };
+  const syncGestureCache = () => {
+    const rows = node.querySelector(".xterm-rows");
+    if (ydisp() !== cachedYdisp || rows === null || measureCache.tops.length !== rows.childElementCount) beginGesture();
+  };
+  let frameRequest = 0;
+  let pendingMove;
+  const applyPendingMove = () => {
+    const point = pendingMove;
+    pendingMove = void 0;
+    if (point === void 0) return;
+    syncGestureCache();
+    const current = cellFromPoint(node, emulator.cols, point.clientX, point.clientY, ydisp(), void 0, measureCache);
+    if (current !== void 0) moveTo(point.end, current);
+  };
+  const scheduleMove = (end, clientX, clientY) => {
+    pendingMove = { end, clientX, clientY };
+    if (frameRequest !== 0) return;
+    frameRequest = requestAnimationFrame(() => {
+      frameRequest = 0;
+      applyPendingMove();
+    });
+  };
+  const flushMove = () => {
+    if (frameRequest !== 0) {
+      cancelAnimationFrame(frameRequest);
+      frameRequest = 0;
+    }
+    applyPendingMove();
+  };
   const hasSelection = () => range !== void 0;
   const endColumnOf = (selection) => Math.max(selection.end.column, selection.start.column + 1);
   const clearTimer = () => {
@@ -10155,22 +10221,24 @@ function installLongPressCopy(options) {
     chip.textContent = text;
   };
   const hostGeometry = () => {
+    if (cachedGeometry !== void 0) return cachedGeometry;
     const rows = node.querySelector(".xterm-rows");
     if (rows === null || rows.childElementCount === 0) return void 0;
     const gridBox = screenBox(rows, node);
     if (gridBox === void 0) return void 0;
     const hostBox = node.getBoundingClientRect();
     if (hostBox.width <= 0) return void 0;
-    return {
+    cachedGeometry = {
       left: hostBox.left,
       gridLeft: gridBox.left,
       top: hostBox.top,
       width: hostBox.width,
       cellWidth: gridBox.width / emulator.cols
     };
+    return cachedGeometry;
   };
   const measureCellWidth = (row) => {
-    const fromRow = pitchFromRow(row);
+    const fromRow = glyphBoxesOf(row, measureCache)?.pitch;
     if (fromRow !== void 0) return fromRow;
     const probe = node.querySelector(".xterm-char-measure-element");
     if (probe === null) return void 0;
@@ -10179,51 +10247,32 @@ function installLongPressCopy(options) {
     if (text.length === 0 || width <= 0) return void 0;
     return width / text.length;
   };
-  const pitchFromRow = (row) => {
-    if (row === void 0 || row === null) return void 0;
-    const walker = row.ownerDocument.createTreeWalker(
-      row,
-      4
-      /* NodeFilter.SHOW_TEXT */
-    );
-    let previous;
-    for (let node2 = walker.nextNode(); node2 !== null; node2 = walker.nextNode()) {
-      const text = node2.textContent ?? "";
-      if (text.length === 0) continue;
-      const range2 = row.ownerDocument.createRange();
-      range2.selectNodeContents(node2);
-      for (let offset = 0; offset < text.length; offset += 1) {
-        range2.setStart(node2, offset);
-        range2.setEnd(node2, offset + 1);
-        const box = range2.getBoundingClientRect();
-        if (box.width <= 0) continue;
-        if (previous !== void 0 && box.left > previous.left) {
-          const pitch = box.left - previous.left;
-          range2.detach();
-          return pitch;
-        }
-        previous = box;
-      }
-      range2.detach();
-    }
-    return void 0;
-  };
   const rowBoxOf = (bufferRow) => {
     const geometry = hostGeometry();
     if (geometry === void 0) return void 0;
     const rows = node.querySelector(".xterm-rows");
+    const index = bufferRow - ydisp();
     const row = findRowByBufferRow(rows, bufferRow, ydisp());
     if (row === void 0) return void 0;
-    const rowBox = row.getBoundingClientRect();
+    let top;
+    let height;
+    if (measureCache.container === rows) {
+      top = measureCache.tops[index];
+      height = measureCache.bottoms[index] - top;
+    } else {
+      const rowBox = row.getBoundingClientRect();
+      top = rowBox.top;
+      height = rowBox.height;
+    }
     const cellWidth = measureCellWidth(row) ?? geometry.cellWidth;
     return {
       // The grid is inset by the host's padding, and a column index is an
       // offset from the grid — not from the host. Anchoring at zero put every
       // column a padding-width to the left of the glyph it names.
       left: geometry.gridLeft - geometry.left,
-      top: rowBox.top - geometry.top,
+      top: top - geometry.top,
       width: geometry.width,
-      height: rowBox.height,
+      height,
       cellWidth
     };
   };
@@ -10268,6 +10317,10 @@ function installLongPressCopy(options) {
     const sameRow = anchor.bufferRow === moving.bufferRow;
     const forward = sameRow ? anchor.column <= moving.column : anchor.bufferRow <= moving.bufferRow;
     const ordered = forward ? { start: { column: anchor.column, bufferRow: anchor.bufferRow }, end: { column: moving.column + 1, bufferRow: moving.bufferRow } } : { start: { column: moving.column, bufferRow: moving.bufferRow }, end: { column: anchor.column, bufferRow: anchor.bufferRow } };
+    const before = range;
+    if (before !== void 0 && ordered.start.column === before.start.column && ordered.start.bufferRow === before.start.bufferRow && ordered.end.column === before.end.column && ordered.end.bufferRow === before.end.bufferRow) {
+      return;
+    }
     range = ordered;
     try {
       const spanRows = ordered.end.bufferRow - ordered.start.bufferRow;
@@ -10285,6 +10338,7 @@ function installLongPressCopy(options) {
     event.preventDefault();
     event.stopPropagation();
     if (!hasSelection()) return;
+    beginGesture();
     handleDrag = end;
     gesture.selecting = true;
     handle.setPointerCapture?.(event.pointerId);
@@ -10292,10 +10346,10 @@ function installLongPressCopy(options) {
       if (handleDrag === void 0) return;
       if (moveEvent.cancelable) moveEvent.preventDefault();
       moveEvent.stopPropagation();
-      const current = cellFromPoint(node, emulator.cols, moveEvent.clientX, moveEvent.clientY, ydisp());
-      if (current !== void 0) moveTo(handleDrag, current);
+      scheduleMove(end, moveEvent.clientX, moveEvent.clientY);
     };
     const finish = () => {
+      flushMove();
       handleDrag = void 0;
       gesture.selecting = false;
       handle.removeEventListener("pointermove", move);
@@ -10364,7 +10418,8 @@ function installLongPressCopy(options) {
   const fireLongPress = (touch) => {
     lastSkip = void 0;
     node.removeAttribute("data-terminal-mobile-select-skip");
-    const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip);
+    syncGestureCache();
+    const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip, measureCache);
     if (cell === void 0) return;
     const bufferRow = cell.bufferRow;
     const line = lineAt(bufferRow);
@@ -10393,6 +10448,7 @@ function installLongPressCopy(options) {
   const onTouchStart = (event) => {
     if (isCopyChipTouch(event)) return;
     if (isHandleTouch(event)) return;
+    beginGesture();
     clearTimer();
     start = void 0;
     dragging = false;
@@ -10426,14 +10482,14 @@ function installLongPressCopy(options) {
     }
     if (event.cancelable) event.preventDefault();
     event.stopPropagation();
-    const current = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp());
-    if (current !== void 0) moveTo("end", current);
+    scheduleMove("end", touch.clientX, touch.clientY);
   };
   const onTouchEnd = () => {
     clearTimer();
     start = void 0;
     if (!dragging) return;
     dragging = false;
+    flushMove();
     gesture.selecting = false;
   };
   node.addEventListener("touchstart", onTouchStart, { passive: false, capture: true });
@@ -10445,6 +10501,10 @@ function installLongPressCopy(options) {
     dispose() {
       clearTimer();
       clearFeedback();
+      if (frameRequest !== 0) {
+        cancelAnimationFrame(frameRequest);
+        frameRequest = 0;
+      }
       gesture.selecting = false;
       removeChip();
       removeHandles();
