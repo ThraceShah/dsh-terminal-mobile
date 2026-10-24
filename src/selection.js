@@ -178,6 +178,121 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, c
 }
 
 /**
+ * The cell under a point FOR A DRAG: clamped, never "nowhere".
+ *
+ * `cellFromPoint` answers `undefined` whenever the finger is not exactly on a
+ * row or on a row's text — correct for a long-press, which must decline to
+ * select anything the finger is not really touching, and wrong for a drag,
+ * where every dropped update FREEZES the selection while the grip keeps
+ * following the raw pointer. That is what a finger drifting off a line does:
+ * a hand cannot drag perfectly horizontally, so a grip dragged forward drifts
+ * onto an empty row, or off the top or bottom of the screen entirely, and the
+ * highlight stopped extending — "the cursor does not follow my finger
+ * forward".
+ *
+ * So a drag clamps instead of declining:
+ *
+ * - `y` past the rows region snaps to the nearest row — the finger is still
+ *   dragging, it is just not over text anymore.
+ * - a row with no glyphs gets its column from the grid itself (the row is a
+ *   real line; only its text is empty), so an empty line still extends the
+ *   selection instead of freezing it.
+ * - text past its own end keeps its geometric column — see
+ *   `columnAtPointInRow`.
+ *
+ * The long-press path keeps the strict `cellFromPoint`: a press outside the
+ * text should select nothing, not the nearest line.
+ *
+ * @param {HTMLElement} node - the screen host.
+ * @param {number} cols - the emulator's column count.
+ * @param {number} clientX
+ * @param {number} clientY
+ * @param {number} [ydisp] - the buffer row at the top of the viewport.
+ * @param {ReturnType<typeof createMeasureCache>} [cache] - a per-gesture cache, so a drag measures once.
+ * @returns {{column: number, bufferRow: number, row: HTMLElement} | undefined}
+ */
+export function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache) {
+  if (!(cols > 0)) return undefined
+  const rows = node.querySelector('.xterm-rows')
+  if (rows === null || rows.childElementCount === 0) return undefined
+  ensureRowBoxes(rows, cache)
+  let y = clientY
+  if (cache !== undefined && cache.container === rows && cache.tops.length > 0) {
+    const top = cache.tops[0]
+    const bottom = cache.bottoms[cache.tops.length - 1]
+    y = Math.min(Math.max(clientY, top), bottom)
+  } else if (cache === undefined) {
+    const first = rows.children[0].getBoundingClientRect()
+    const last = rows.children[rows.childElementCount - 1].getBoundingClientRect()
+    y = Math.min(Math.max(clientY, first.top), last.bottom)
+  }
+  const target = findRowAtPoint(rows, y, cache)
+  if (target === undefined) return undefined
+  const canvas = node.querySelector('canvas')
+  if (canvas === null) {
+    // No canvas: the accessibility renderer, whose row elements ARE the text.
+    const column = columnAtPointInRow(target.row, clientX, cols, cache) ?? geometricColumn(node, rows, clientX, cols)
+    if (column === undefined) return undefined
+    return { column, bufferRow: ydisp + target.index, row: target.row }
+  }
+  const grid = canvas.getBoundingClientRect()
+  if (grid.width <= 0) return undefined
+  const column = Math.min(Math.max(Math.floor(((clientX - grid.left) / grid.width) * cols), 0), cols - 1)
+  return { column, bufferRow: ydisp + target.index, row: target.row }
+}
+
+/**
+ * The column at a client X against the GRID, ignoring any text.
+ *
+ * The fallback for a row whose text says nothing — an empty line, or one whose
+ * glyphs have not painted yet. The grid is the authority for cells: a row is
+ * laid out across all `cols` whether or not it renders characters in them.
+ *
+ * @param {HTMLElement} node - the screen host.
+ * @param {HTMLElement} rows - the `.xterm-rows` container.
+ * @param {number} clientX
+ * @param {number} cols
+ * @returns {number | undefined}
+ */
+function geometricColumn(node, rows, clientX, cols) {
+  const grid = screenBox(rows, node)
+  if (grid === undefined || grid.width <= 0) return undefined
+  const column = Math.floor(((clientX - grid.left) / grid.width) * cols)
+  return Math.min(Math.max(column, 0), Math.max(cols - 1, 0))
+}
+
+/**
+ * The DOM row under a client point, with its index within the viewport.
+ *
+ * The probe shows `.xterm-rows` children carry no `aria-rowindex`, so the index
+ * within the container IS the viewport row; the caller adds `ydisp` to reach the
+ * buffer. A point above the first row or below the last resolves to no row at
+ * all, because guessing a neighbour would select a line the finger never
+ * touched.
+ *
+ * @param {HTMLElement} rows - the `.xterm-rows` container.
+ * @param {number} clientY
+ * @returns {{row: HTMLElement, index: number} | undefined}
+ */
+/**
+ * Read every row's box once for this gesture, if that has not happened yet.
+ *
+ * @param {HTMLElement} rows - the `.xterm-rows` container.
+ * @param {ReturnType<typeof createMeasureCache>} [cache]
+ */
+function ensureRowBoxes(rows, cache) {
+  if (cache === undefined || cache.container === rows) return
+  cache.container = rows
+  cache.tops = []
+  cache.bottoms = []
+  for (let index = 0; index < rows.childElementCount; index += 1) {
+    const box = rows.children[index].getBoundingClientRect()
+    cache.tops.push(box.top)
+    cache.bottoms.push(box.bottom)
+  }
+}
+
+/**
  * The DOM row under a client point, with its index within the viewport.
  *
  * The probe shows `.xterm-rows` children carry no `aria-rowindex`, so the index
@@ -191,19 +306,8 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, c
  * @returns {{row: HTMLElement, index: number} | undefined}
  */
 function findRowAtPoint(rows, clientY, cache) {
+  ensureRowBoxes(rows, cache)
   const children = rows.children
-  if (cache !== undefined && cache.container !== rows) {
-    // First measurement of this container for this gesture: read every row box
-    // once, and let the rest of the gesture answer by arithmetic.
-    cache.container = rows
-    cache.tops = []
-    cache.bottoms = []
-    for (let index = 0; index < children.length; index += 1) {
-      const box = children[index].getBoundingClientRect()
-      cache.tops.push(box.top)
-      cache.bottoms.push(box.bottom)
-    }
-  }
   for (let index = 0; index < children.length; index += 1) {
     const top = cache === undefined ? children[index].getBoundingClientRect().top : cache.tops[index]
     const bottom = cache === undefined ? children[index].getBoundingClientRect().bottom : cache.bottoms[index]
@@ -242,9 +346,19 @@ export function columnAtPointInRow(row, clientX, cols, cache) {
     if (clientX < box.left) return lastColumn ?? 0
     if (clientX <= box.right) return index
   }
-  // Past the last glyph: a row is padded out to the grid, so this is still the
-  // row the finger is on and the column clamps to the last cell.
+  // Past the last glyph: a row is padded out to the grid, so the finger is
+  // still on this row — but at a column the TEXT does not reach. Answering
+  // with the last glyph's column (as this used to) silently stops a drag from
+  // ever extending past the end of a short line: the finger keeps moving
+  // right, the column stays put. The row's own pitch, measured from its first
+  // glyph, gives the real cell — and it is a cell the grid really has, which
+  // is what `select()` wants.
   if (measured.length === 0) return undefined
+  const first = measured.boxes.find((box) => box.visible)
+  if (first !== undefined && measured.pitch !== undefined && measured.pitch > 0) {
+    const column = Math.floor((clientX - first.left) / measured.pitch)
+    return Math.min(Math.max(column, 0), Math.max(cols - 1, 0))
+  }
   return Math.min(lastColumn ?? measured.length - 1, Math.max(cols - 1, 0))
 }
 
@@ -491,7 +605,10 @@ export function installLongPressCopy(options) {
     pendingMove = undefined
     if (point === undefined) return
     syncGestureCache()
-    const current = cellFromPoint(node, emulator.cols, point.clientX, point.clientY, ydisp(), undefined, measureCache)
+    // The drag variant of the hit test: a finger that drifts onto an empty
+    // row or off the screen edge must keep extending the selection, not
+    // freeze it — see `cellForDrag`.
+    const current = cellForDrag(node, emulator.cols, point.clientX, point.clientY, ydisp(), measureCache)
     if (current !== undefined) moveTo(point.end, current)
   }
 

@@ -145,10 +145,15 @@ suite.check('the slop is small enough to feel like a hold', LONG_PRESS_SLOP_PX <
   suite.equal('a point on the first column maps to column 0', cellOf(0, 105), { column: 0, bufferRow: 0 })
   suite.equal('a point in the last row resolves its own buffer row', cellOf(5, 150), { column: 0, bufferRow: 2 })
   // A finger off the left edge resolves into the row it is level with, the same
-  // way one past the last glyph clamps to the final column; the row stays the
-  // unit that decides whether there is a cell at all.
+  // way one past the row's text resolves into the row's last GRID cell; the row
+  // stays the unit that decides whether there is a cell at all.
   suite.equal('a point left of the grid clamps to column 0', cellOf(-1, 105), { column: 0, bufferRow: 0 })
-  suite.equal('a point right of the row text clamps to its last column', cellOf(900, 130), { column: 12, bufferRow: 1 })
+  // Past the text, the answer is the grid's last column, not the text's: the
+  // row is laid out across all `cols` whether or not it renders characters in
+  // them, and a drag that stopped at the text's end could never extend a
+  // selection past a short line. A long-press that lands there still selects
+  // nothing — `wordRangeAt` has no word past the line's own end.
+  suite.equal('a point right of the row text clamps to its last grid column', cellOf(900, 130), { column: 79, bufferRow: 1 })
   suite.check('a point above every row is rejected', cellFromPoint(node, 80, 10, 50) === undefined)
   suite.check('a point below every row is rejected', cellFromPoint(node, 80, 10, 900) === undefined)
   const empty = { querySelector: () => null }

@@ -504,6 +504,59 @@ try {
   suite.equal('a cross-row drag selects only the cells it crossed', across.clipboard, `${CROSS}\n${SECOND.slice(0, 2)}`, JSON.stringify(across))
   const survived = await page.evaluate(() => document.querySelectorAll('[data-terminal-mobile-handle]').length)
   suite.equal('the grips survive a cross-row drag', survived, 2, JSON.stringify({ grips: survived }))
+
+  // ── a diagonal drift past the text does not freeze the selection ─────────
+  // A hand cannot drag perfectly horizontally: a grip dragged forward drifts
+  // down across the empty rows below the output, and can pass the bottom of
+  // the screen. The plain hit-test answers "nowhere" in both cases — correct
+  // for a long-press, which must not select a line the finger never touched,
+  // but a drag that declines FREEZES the selection while the grip keeps
+  // following the raw pointer, so the highlight stops extending forward. The
+  // drag hit-test clamps instead, so this drift — past the rows' bottom, over
+  // empty rows — must carry the selection all the way down.
+  await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y), [markerPoint])
+  await page.waitForTimeout(700)
+  await page.evaluate(([p]) => window.__tmDispatch('touchend', p.x, p.y), [markerPoint])
+  await page.waitForTimeout(250)
+
+  const drifted = await page.evaluate((x) => {
+    const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
+    const rows = document.querySelector('.xterm-rows').getBoundingClientRect()
+    const box = grip.getBoundingClientRect()
+    const from = { x: box.left + box.width / 2, y: box.top + 11 }
+    // Column 1 of the second line's x, but a y past the bottom of the rows:
+    // the far end of a diagonal drift that ran off the text.
+    const to = { x, y: rows.bottom + 60 }
+    const send = (type, p) => {
+      grip.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, clientX: p.x, clientY: p.y }))
+    }
+    send('pointerdown', from)
+    send('pointermove', to)
+    send('pointerup', to)
+    return { grips: document.querySelectorAll('[data-terminal-mobile-handle]').length }
+  }, drop.x)
+  await page.waitForTimeout(250)
+
+  await page.evaluate(() => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    if (chip !== null) chip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1 }))
+  })
+  await page.waitForTimeout(500)
+  drifted.clipboard = await page.evaluate(async () => {
+    try {
+      return await navigator.clipboard.readText()
+    } catch (error) {
+      return `read failed: ${error.message}`
+    }
+  })
+  // The selection must span from the marker through the second line and on
+  // into the empty rows — a freeze would have left the earlier two-cell drag.
+  suite.check(
+    'a drift past the text keeps extending the selection',
+    drifted.clipboard.startsWith(`${CROSS}\n${SECOND}\n`),
+    JSON.stringify(drifted),
+  )
+  suite.equal('the grips survive a drift past the text', drifted.grips, 2, JSON.stringify(drifted))
 } finally {
   await app.close()
 }

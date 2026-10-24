@@ -10005,18 +10005,54 @@ function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, cache) {
   if (column < 0 || column >= cols) return miss("column");
   return { column, bufferRow: ydisp + target.index, row: target.row };
 }
-function findRowAtPoint(rows, clientY, cache) {
-  const children = rows.children;
-  if (cache !== void 0 && cache.container !== rows) {
-    cache.container = rows;
-    cache.tops = [];
-    cache.bottoms = [];
-    for (let index = 0; index < children.length; index += 1) {
-      const box = children[index].getBoundingClientRect();
-      cache.tops.push(box.top);
-      cache.bottoms.push(box.bottom);
-    }
+function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache) {
+  if (!(cols > 0)) return void 0;
+  const rows = node.querySelector(".xterm-rows");
+  if (rows === null || rows.childElementCount === 0) return void 0;
+  ensureRowBoxes(rows, cache);
+  let y = clientY;
+  if (cache !== void 0 && cache.container === rows && cache.tops.length > 0) {
+    const top = cache.tops[0];
+    const bottom = cache.bottoms[cache.tops.length - 1];
+    y = Math.min(Math.max(clientY, top), bottom);
+  } else if (cache === void 0) {
+    const first = rows.children[0].getBoundingClientRect();
+    const last = rows.children[rows.childElementCount - 1].getBoundingClientRect();
+    y = Math.min(Math.max(clientY, first.top), last.bottom);
   }
+  const target = findRowAtPoint(rows, y, cache);
+  if (target === void 0) return void 0;
+  const canvas = node.querySelector("canvas");
+  if (canvas === null) {
+    const column2 = columnAtPointInRow(target.row, clientX, cols, cache) ?? geometricColumn(node, rows, clientX, cols);
+    if (column2 === void 0) return void 0;
+    return { column: column2, bufferRow: ydisp + target.index, row: target.row };
+  }
+  const grid = canvas.getBoundingClientRect();
+  if (grid.width <= 0) return void 0;
+  const column = Math.min(Math.max(Math.floor((clientX - grid.left) / grid.width * cols), 0), cols - 1);
+  return { column, bufferRow: ydisp + target.index, row: target.row };
+}
+function geometricColumn(node, rows, clientX, cols) {
+  const grid = screenBox(rows, node);
+  if (grid === void 0 || grid.width <= 0) return void 0;
+  const column = Math.floor((clientX - grid.left) / grid.width * cols);
+  return Math.min(Math.max(column, 0), Math.max(cols - 1, 0));
+}
+function ensureRowBoxes(rows, cache) {
+  if (cache === void 0 || cache.container === rows) return;
+  cache.container = rows;
+  cache.tops = [];
+  cache.bottoms = [];
+  for (let index = 0; index < rows.childElementCount; index += 1) {
+    const box = rows.children[index].getBoundingClientRect();
+    cache.tops.push(box.top);
+    cache.bottoms.push(box.bottom);
+  }
+}
+function findRowAtPoint(rows, clientY, cache) {
+  ensureRowBoxes(rows, cache);
+  const children = rows.children;
   for (let index = 0; index < children.length; index += 1) {
     const top = cache === void 0 ? children[index].getBoundingClientRect().top : cache.tops[index];
     const bottom = cache === void 0 ? children[index].getBoundingClientRect().bottom : cache.bottoms[index];
@@ -10038,6 +10074,11 @@ function columnAtPointInRow(row, clientX, cols, cache) {
     if (clientX <= box.right) return index;
   }
   if (measured.length === 0) return void 0;
+  const first = measured.boxes.find((box) => box.visible);
+  if (first !== void 0 && measured.pitch !== void 0 && measured.pitch > 0) {
+    const column = Math.floor((clientX - first.left) / measured.pitch);
+    return Math.min(Math.max(column, 0), Math.max(cols - 1, 0));
+  }
   return Math.min(lastColumn ?? measured.length - 1, Math.max(cols - 1, 0));
 }
 function glyphBoxesOf(row, cache) {
@@ -10149,7 +10190,7 @@ function installLongPressCopy(options) {
     pendingMove = void 0;
     if (point === void 0) return;
     syncGestureCache();
-    const current = cellFromPoint(node, emulator.cols, point.clientX, point.clientY, ydisp(), void 0, measureCache);
+    const current = cellForDrag(node, emulator.cols, point.clientX, point.clientY, ydisp(), measureCache);
     if (current !== void 0) moveTo(point.end, current);
   };
   const scheduleMove = (end, clientX, clientY) => {
