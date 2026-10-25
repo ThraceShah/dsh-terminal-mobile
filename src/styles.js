@@ -24,6 +24,12 @@ const CSS = `
   min-width: 0;
   min-height: 0;
   height: 100%;
+  /* The chip's containing block: the chip is a child of the ROOT, not of the
+     screen host, so a selection on the host's first row can still put the chip
+     fully above the text — over this toolbar — instead of clipped by the
+     host's own overflow or parked on the row it means to clear. Nothing else
+     in this subtree is positioned, so no other containing block changes. */
+  position: relative;
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
   padding-bottom: var(--dsh-tm-keyboard-inset, 0px);

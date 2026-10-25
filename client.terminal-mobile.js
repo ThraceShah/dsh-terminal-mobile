@@ -9295,6 +9295,12 @@ var CSS = `
   min-width: 0;
   min-height: 0;
   height: 100%;
+  /* The chip's containing block: the chip is a child of the ROOT, not of the
+     screen host, so a selection on the host's first row can still put the chip
+     fully above the text \u2014 over this toolbar \u2014 instead of clipped by the
+     host's own overflow or parked on the row it means to clear. Nothing else
+     in this subtree is positioned, so no other containing block changes. */
+  position: relative;
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
   padding-bottom: var(--dsh-tm-keyboard-inset, 0px);
@@ -10291,6 +10297,7 @@ function installLongPressCopy(options) {
     removeHandles();
     range = void 0;
   };
+  const chipLayer = () => node.closest(".dsh-tm-root") ?? node;
   const showChip = (text, action = "copy") => {
     if (chip === void 0) {
       chip = document.createElement("button");
@@ -10298,7 +10305,7 @@ function installLongPressCopy(options) {
       chip.className = "dsh-tm-copychip";
       chip.setAttribute("data-terminal-mobile-copy", "");
       chip.addEventListener("pointerdown", onChipPress);
-      node.appendChild(chip);
+      chipLayer().appendChild(chip);
     }
     chip.textContent = text;
     chipAction = action;
@@ -10362,15 +10369,30 @@ function installLongPressCopy(options) {
       cellWidth
     };
   };
+  const chipAnchor = (cell) => {
+    if (range === void 0) return { bufferRow: cell.bufferRow, column: cell.column + 0.5 };
+    const start2 = range.start.bufferRow * emulator.cols + range.start.column;
+    const end = range.end.bufferRow * emulator.cols + range.end.column;
+    const mid = (start2 + end) / 2;
+    const bufferRow = Math.floor(mid / emulator.cols);
+    return { bufferRow, column: mid - bufferRow * emulator.cols };
+  };
   const placeChip = (cell) => {
-    const box = rowBoxOf(cell.bufferRow);
-    const margin = 4;
-    if (box === void 0 || chip === void 0) return;
+    if (chip === void 0) return;
+    const layer = chipLayer();
+    const anchor = chipAnchor(cell);
+    const box = rowBoxOf(anchor.bufferRow);
+    if (box === void 0) return;
     const chipBox = chip.getBoundingClientRect();
-    const x = box.left + (cell.column + 0.5) * box.cellWidth;
-    chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(node.clientWidth - chipBox.width - margin, margin)))}px`;
-    const above = Math.max(box.top - chipBox.height - 6, 2);
-    chip.style.top = `${Math.round(above)}px`;
+    const hostBox = node.getBoundingClientRect();
+    const layerBox = layer.getBoundingClientRect();
+    const x = hostBox.left - layerBox.left + box.left + anchor.column * box.cellWidth;
+    let y = hostBox.top - layerBox.top + box.top - chipBox.height - 6;
+    if (layer === node) y = Math.max(y, 2);
+    const margin = 4;
+    const width = layer.clientWidth;
+    chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(width - chipBox.width - margin, margin)))}px`;
+    chip.style.top = `${Math.round(y)}px`;
   };
   const scheduleFeedback = () => {
     clearFeedback();

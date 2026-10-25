@@ -345,6 +345,19 @@ try {
     JSON.stringify({ dot: dotOf(grips[1]), last: lastCentre, marker: MARKER }),
   )
 
+  // The chip CENTRES over the selection instead of hugging its left edge:
+  // the two grips sit at the selection's own ends, so the chip's centre must
+  // land on theirs — the mid-point of the span, measured against grips rather
+  // than against any arithmetic of our own. (Snapshot from the first hold:
+  // the chip is placed once, and every re-placement uses the same anchor.)
+  const chipMid = afterHold.chipBox === null ? null : afterHold.chipBox.left + afterHold.chipBox.width / 2
+  const gripsMid = (dotOf(grips[0]) + dotOf(grips[1])) / 2
+  suite.check(
+    'the Copy chip centres over the selection',
+    chipMid !== null && Math.abs(chipMid - gripsMid) <= 3,
+    JSON.stringify({ chipMid: Math.round(chipMid ?? -1), gripsMid: Math.round(gripsMid) }),
+  )
+
   // Each grip reaches past its dot the way a native handle does: toward the
   // selected text — the side AWAY from a screen edge, where Android's
   // back-gesture strip would otherwise win the press — and below it, where a
@@ -693,29 +706,26 @@ try {
     const box = chip.getBoundingClientRect()
     const start = document.querySelector('[data-terminal-mobile-handle="start"]')
     const startBox = start === null ? null : start.getBoundingClientRect()
-    // Inside BOTH the chip and the start grip's box: the region where the two
-    // used to fight, and where the grip (the higher layer then) won every
-    // tap. The chip must win it now.
-    let overlapHit = null
-    if (startBox !== null) {
-      const top = Math.max(box.top, startBox.top)
-      const bottom = Math.min(box.bottom, startBox.bottom)
-      if (bottom - top > 0) {
-        overlapHit = document.elementFromPoint(box.left + box.width / 2, (top + bottom) / 2)
-      }
-    }
     return {
       chip: chip.textContent,
-      above: box.top < rowTop,
+      // A full row above the text: the chip's bottom clears the row's top, so
+      // it is neither parked ON the selection (the old top-row clamp) nor
+      // half-clipped by the host's overflow.
+      above: box.bottom <= rowTop - 1,
       top: Math.round(box.top),
+      // It lives in the root layer now — the only way to be a row above a
+      // first-row selection at all.
+      inRoot: chip.parentElement !== null && chip.parentElement.classList.contains('dsh-tm-root'),
       hits: document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === chip,
-      overlapWins: overlapHit === chip,
+      // Chip above the row, grips below it: the two must not share a pixel.
+      clearsGrip: startBox === null || box.bottom < startBox.top,
       grips: document.querySelectorAll('[data-terminal-mobile-handle]').length,
     }
   }, topHold.rowTop)
-  suite.check('the Copy chip sits above a top-row selection', chipState.chip !== null && chipState.above, JSON.stringify(chipState))
+  suite.check('the Copy chip sits a full row above a top-row selection', chipState.chip !== null && chipState.above, JSON.stringify(chipState))
+  suite.check('the chip floats in the root layer', chipState.inRoot === true, JSON.stringify(chipState))
   suite.check('the chip takes the tap at its own centre', chipState.hits === true, JSON.stringify(chipState))
-  suite.check('the chip wins where it overlaps the start grip', chipState.overlapWins === true, JSON.stringify(chipState))
+  suite.check('the chip clears the start grip entirely', chipState.clearsGrip === true, JSON.stringify(chipState))
   suite.check('a top-row hold still offers Copy', chipState.chip !== null && chipCopy.idle.has(chipState.chip), JSON.stringify(chipState))
   suite.equal('the top-row hold keeps its grips', chipState.grips, 2, JSON.stringify(chipState))
 } finally {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-terminal-mobile",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Mobile-first replacement for the DSH web right-sidebar terminal screen: adjustable font size, a Termux-style extension key bar, and touch scrolling that belongs to the terminal.",
   "type": "module",
   "main": "index.js",

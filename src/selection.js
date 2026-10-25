@@ -792,6 +792,22 @@ export function installLongPressCopy(options) {
     range = undefined
   }
 
+  /**
+   * The element the chip is a child of: the plugin root, when there is one.
+   *
+   * The root contains the toolbar too, so the chip can sit a full row above
+   * the selection even when the selection is the host's FIRST row — over the
+   * toolbar, which is the only thing there is to sit over. The host clips its
+   * children, so a chip inside it could never clear that row: it was either
+   * pinned onto the text or cut in half.
+   *
+   * Falls back to the host for a screen mounted outside the plugin shell;
+   * `placeChip` keeps the old on-the-edge clamp for that case.
+   *
+   * @returns {HTMLElement}
+   */
+  const chipLayer = () => node.closest('.dsh-tm-root') ?? node
+
   const showChip = (text, action = 'copy') => {
     if (chip === undefined) {
       chip = document.createElement('button')
@@ -799,7 +815,10 @@ export function installLongPressCopy(options) {
       chip.className = 'dsh-tm-copychip'
       chip.setAttribute('data-terminal-mobile-copy', '')
       chip.addEventListener('pointerdown', onChipPress)
-      node.appendChild(chip)
+      // `placeChip` translates the host-relative geometry across this one
+      // level — the chip lives with the root so it can float over the
+      // toolbar; see `chipLayer`.
+      chipLayer().appendChild(chip)
     }
     chip.textContent = text
     chipAction = action
@@ -927,27 +946,68 @@ export function installLongPressCopy(options) {
   }
 
   /**
-   * Place the chip over `cell`, falling back to the anchor when it scrolls off.
+   * Where the chip centres, in buffer coordinates: the MIDDLE of the
+   * selection — or the pressed cell, when there is no selection (Paste).
+   *
+   * A chip anchored at the start column sits exactly where the start grip
+   * lives: the crowded corner of the selection, hugging the left edge even
+   * when the selection runs half the screen. Every other touch app centres
+   * the menu over the span instead, and that is what reads as "attached to
+   * what is selected" rather than "attached to a handle".
+   *
+   * The span is linearised first, so a wrapped or multi-row selection still
+   * has a true middle — on some row inside it — and the chip follows THAT row.
+   *
+   * `column` comes back in FRACTIONAL cell units (0.5 = the middle of cell 0),
+   * because the middle of a selection is generally a cell boundary, not a cell
+   * centre: the midpoint of an eight-cell span sits between its fourth and
+   * fifth cells, which is exactly where the grips' own dots average out.
+   *
+   * @param {{column: number, bufferRow: number}} cell - the pressed cell, for a selection-less chip.
+   * @returns {{column: number, bufferRow: number}}
+   */
+  const chipAnchor = (cell) => {
+    if (range === undefined) return { bufferRow: cell.bufferRow, column: cell.column + 0.5 }
+    const start = range.start.bufferRow * emulator.cols + range.start.column
+    const end = range.end.bufferRow * emulator.cols + range.end.column
+    const mid = (start + end) / 2
+    const bufferRow = Math.floor(mid / emulator.cols)
+    return { bufferRow, column: mid - bufferRow * emulator.cols }
+  }
+
+  /**
+   * Place the chip one row above the selection, centred over it.
    *
    * The row comes from inverting the hit-test's own mapping — `bufferRow -
    * ydisp`, not an attribute — so the chip lands on the row the selection is
    * actually on rather than near it.
+   *
+   * The chip is a child of the ROOT (see `chipLayer`), so its top may go
+   * NEGATIVE: a selection on the host's first row puts the chip over the
+   * toolbar, a row above the text — never parked on the row it must clear,
+   * never clipped by the host's overflow, and never on the grips, which live
+   * below the row. Only a host without a root above it keeps the old clamp.
    */
   const placeChip = (cell) => {
-    const box = rowBoxOf(cell.bufferRow)
-    const margin = 4
-    if (box === undefined || chip === undefined) return
+    if (chip === undefined) return
+    const layer = chipLayer()
+    const anchor = chipAnchor(cell)
+    const box = rowBoxOf(anchor.bufferRow)
+    if (box === undefined) return
     const chipBox = chip.getBoundingClientRect()
-    const x = box.left + (cell.column + 0.5) * box.cellWidth
-    chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(node.clientWidth - chipBox.width - margin, margin)))}px`
-    // Always ABOVE the row, clamped to the host's top edge. Flipping below
-    // for a top-row selection put the chip straight onto the start grip —
-    // same anchor column, grips a layer above the chip — and Copy became
-    // untappable. A floating menu overlapping the first line of text is what
-    // every other touch app does: the chip carries a solid background and
-    // sits on the top layer, and the grips live below the row, clear of it.
-    const above = Math.max(box.top - chipBox.height - 6, 2)
-    chip.style.top = `${Math.round(above)}px`
+    const hostBox = node.getBoundingClientRect()
+    const layerBox = layer.getBoundingClientRect()
+    // Host-relative geometry (what `rowBoxOf` speaks) → layer-relative: the
+    // chip moved one level up, and the two boxes are the only offset.
+    // `anchor.column` is already in cell units (its centre for a plain cell,
+    // a boundary for a span's middle), so there is no half-cell to add.
+    const x = hostBox.left - layerBox.left + box.left + anchor.column * box.cellWidth
+    let y = hostBox.top - layerBox.top + box.top - chipBox.height - 6
+    if (layer === node) y = Math.max(y, 2)
+    const margin = 4
+    const width = layer.clientWidth
+    chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(width - chipBox.width - margin, margin)))}px`
+    chip.style.top = `${Math.round(y)}px`
   }
 
   /**
