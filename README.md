@@ -28,17 +28,31 @@ terminal package) at a lower slot priority, and adds what a phone needs:
 
 ## Install
 
-Install straight from this repository — no npm account or registry needed:
+From **npm** (published as [`dsh-terminal-mobile`](https://www.npmjs.com/package/dsh-terminal-mobile)):
 
 ```bash
-dsh plugin --profile web add github:ThraceShah/dsh-terminal-mobile
+npm pack dsh-terminal-mobile          # fetch the published tarball
+tar xzf dsh-terminal-mobile-*.tgz
+dsh plugin --profile web add -w ./package
+```
+
+The last line runs in the directory the tarball extracted into. Two details,
+both verified the hard way: the directory must look like a path (`./package`
+or an absolute one — a bare `package` is read as an npm package name, and the
+registry has one), and `-w` is required, because `dsh plugin` forwards to pnpm,
+which refuses a workspace-root add without it.
+
+Or straight from this repository — no npm needed:
+
+```bash
+dsh plugin --profile web add -w github:ThraceShah/dsh-terminal-mobile
 ```
 
 Or from a local clone:
 
 ```bash
 git clone https://github.com/ThraceShah/dsh-terminal-mobile.git
-dsh plugin --profile web add "$PWD/dsh-terminal-mobile"
+dsh plugin --profile web add -w "$PWD/dsh-terminal-mobile"
 ```
 
 Refresh the running GUI (the profile's bundle list changed). Remove with:
