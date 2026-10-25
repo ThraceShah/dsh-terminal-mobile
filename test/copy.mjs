@@ -552,9 +552,11 @@ try {
   // Drag the END grip from the marker down to column 2 of the next row.
   // `1.5 * pitch` lands on the second glyph's centre, so the end grip names
   // column 1 and the exclusive end is column 2: the drag copies exactly the
-  // first two cells of the row below. The y sits three-quarters down the row —
-  // past its middle, which is where a drag counts as having changed rows.
-  const drop = { x: second.firstLeft + 1.5 * second.pitch, y: second.rowBoxTop + second.rowBoxHeight * 0.75 }
+  // first two cells of the row below. The y sits nine-tenths down the row —
+  // past its 85% entry line, which is where a drag counts as having changed
+  // rows (`ROW_CHANGE_FRACTION`); a drop at three-quarters would now stay on
+  // the row it came from.
+  const drop = { x: second.firstLeft + 1.5 * second.pitch, y: second.rowBoxTop + second.rowBoxHeight * 0.9 }
   const endBox = liveGrips[1]
   const gripCentre = { x: endBox.left + endBox.width / 2, y: endBox.top + endBox.height / 2 }
   // Dispatch the drag as pointer events on the grip itself, the same way the
@@ -649,6 +651,73 @@ try {
     JSON.stringify(drifted),
   )
   suite.equal('the grips survive a drift past the text', drifted.grips, 2, JSON.stringify(drifted))
+
+  // ── the Copy chip stays above the row, even at the top of the screen ──────
+  // On a top-row selection the chip used to FLIP below the row — straight
+  // onto the start grip (same anchor column, grips a layer above it) — and
+  // Copy could not be tapped at all. It now always sits above the row,
+  // clamped to the host's top edge, on the top layer: the floating-menu
+  // pattern every other touch app uses for a selection.
+  await page.locator('[data-sidebar-terminal-screen]').click()
+  await page.keyboard.type('clear; echo CHIPTOP')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(800)
+
+  const topHold = await page.evaluate((text) => {
+    const rows = document.querySelector('.xterm-rows')
+    for (const row of rows.children) {
+      if ((row.textContent ?? '').trim() !== text) continue
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const value = node.textContent ?? ''
+        if (!value.length) continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        const box = range.getBoundingClientRect()
+        range.detach()
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2, rowTop: row.getBoundingClientRect().top }
+      }
+    }
+    return undefined
+  }, 'CHIPTOP')
+  suite.check('the top-row line is on screen', topHold !== undefined, JSON.stringify(topHold))
+
+  await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y), [topHold])
+  await page.waitForTimeout(700)
+  await page.evaluate(([p]) => window.__tmDispatch('touchend', p.x, p.y), [topHold])
+  await page.waitForTimeout(250)
+
+  const chipState = await page.evaluate((rowTop) => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    if (chip === null) return { chip: null }
+    const box = chip.getBoundingClientRect()
+    const start = document.querySelector('[data-terminal-mobile-handle="start"]')
+    const startBox = start === null ? null : start.getBoundingClientRect()
+    // Inside BOTH the chip and the start grip's box: the region where the two
+    // used to fight, and where the grip (the higher layer then) won every
+    // tap. The chip must win it now.
+    let overlapHit = null
+    if (startBox !== null) {
+      const top = Math.max(box.top, startBox.top)
+      const bottom = Math.min(box.bottom, startBox.bottom)
+      if (bottom - top > 0) {
+        overlapHit = document.elementFromPoint(box.left + box.width / 2, (top + bottom) / 2)
+      }
+    }
+    return {
+      chip: chip.textContent,
+      above: box.top < rowTop,
+      top: Math.round(box.top),
+      hits: document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === chip,
+      overlapWins: overlapHit === chip,
+      grips: document.querySelectorAll('[data-terminal-mobile-handle]').length,
+    }
+  }, topHold.rowTop)
+  suite.check('the Copy chip sits above a top-row selection', chipState.chip !== null && chipState.above, JSON.stringify(chipState))
+  suite.check('the chip takes the tap at its own centre', chipState.hits === true, JSON.stringify(chipState))
+  suite.check('the chip wins where it overlaps the start grip', chipState.overlapWins === true, JSON.stringify(chipState))
+  suite.check('a top-row hold still offers Copy', chipState.chip !== null && chipCopy.idle.has(chipState.chip), JSON.stringify(chipState))
+  suite.equal('the top-row hold keeps its grips', chipState.grips, 2, JSON.stringify(chipState))
 } finally {
   await app.close()
 }

@@ -9429,7 +9429,9 @@ var CSS = `
    it needs an explicit z-index to sit above xterm's canvas layers. */
 .dsh-tm-copychip {
   position: absolute;
-  z-index: 6;
+  /* Above the grips (7): the chip is the only way to COPY, and a grip whose
+     box overlaps it would win every tap in the overlap. */
+  z-index: 8;
   padding: 5px 12px;
   border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-sm);
@@ -9540,12 +9542,25 @@ var CSS = `
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 1px;
 }
-.dsh-tm-key--edit {
-  margin-left: auto;
-  min-width: 32px;
-  padding: 0 6px;
+/* A word among the toolbar's icons: same box as the iconbutton, but
+   wide enough for its label \u2014 the editor button says what it edits. */
+.dsh-tm-textbutton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
   color: var(--dsw-alias-label-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
 }
+.dsh-tm-textbutton:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
 /* The shared Modal card is a fixed-height flex column with overflow:hidden, so a
    long editor (45 builtin keys + many custom rows) pushes its own footer off a
@@ -10034,21 +10049,26 @@ function rowWithHysteresis(rows, found, clientY, currentRow, ydisp, cache) {
   if (currentRow === void 0) return found.index;
   const from = currentRow - ydisp;
   if (from === found.index || from < 0 || from >= rows.childElementCount) return found.index;
-  const mid = rowMidOf(rows, found.index, cache);
-  if (mid === void 0) return found.index;
-  const entered = found.index > from ? clientY > mid : clientY < mid;
+  const descending = found.index > from;
+  const line = rowEntryLineOf(rows, found.index, descending, cache);
+  if (line === void 0) return found.index;
+  const entered = descending ? clientY > line : clientY < line;
   return entered ? found.index : from;
 }
-function rowMidOf(rows, index, cache) {
+var ROW_CHANGE_FRACTION = 0.5 * 1.7;
+function rowEntryLineOf(rows, index, descending, cache) {
+  let top;
+  let height;
   if (cache !== void 0 && cache.container === rows && cache.tops.length === rows.childElementCount) {
-    const top = cache.tops[index];
-    const bottom = cache.bottoms[index];
-    if (bottom - top <= 0) return void 0;
-    return (top + bottom) / 2;
+    top = cache.tops[index];
+    height = cache.bottoms[index] - top;
+  } else {
+    const box = rows.children[index].getBoundingClientRect();
+    top = box.top;
+    height = box.height;
   }
-  const box = rows.children[index].getBoundingClientRect();
-  if (box.height <= 0) return void 0;
-  return box.top + box.height / 2;
+  if (height <= 0) return void 0;
+  return top + (descending ? ROW_CHANGE_FRACTION : 1 - ROW_CHANGE_FRACTION) * height;
 }
 function geometricColumn(node, rows, clientX, cols) {
   const grid = screenBox(rows, node);
@@ -10349,8 +10369,8 @@ function installLongPressCopy(options) {
     const chipBox = chip.getBoundingClientRect();
     const x = box.left + (cell.column + 0.5) * box.cellWidth;
     chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(node.clientWidth - chipBox.width - margin, margin)))}px`;
-    const above = box.top - chipBox.height - 6;
-    chip.style.top = `${Math.round(above >= 0 ? above : box.top + box.height + 6)}px`;
+    const above = Math.max(box.top - chipBox.height - 6, 2);
+    chip.style.top = `${Math.round(above)}px`;
   };
   const scheduleFeedback = () => {
     clearFeedback();
@@ -10761,7 +10781,7 @@ function printableHint(data) {
 }
 
 // src/KeyBar.js
-function KeyBar({ t, prefs, ui: ui2, onKey, onEdit }) {
+function KeyBar({ t, prefs, ui: ui2, onKey }) {
   const sticky = ui2.sticky;
   const armed = React.useSyncExternalStore(sticky.subscribe, sticky.getSnapshot, sticky.getSnapshot);
   const press = (event, action) => {
@@ -10830,22 +10850,6 @@ function KeyBar({ t, prefs, ui: ui2, onKey, onEdit }) {
       )
     );
   }
-  buttons.push(
-    React.createElement(
-      "button",
-      {
-        key: "edit",
-        type: "button",
-        className: "dsh-tm-key dsh-tm-key--edit",
-        "aria-label": t("bar.edit"),
-        title: t("bar.edit"),
-        "data-terminal-mobile-action": "keybar-edit",
-        onPointerDown: (event) => press(event, onEdit),
-        onClick: (event) => event.preventDefault()
-      },
-      "\u2328"
-    )
-  );
   return React.createElement(
     "div",
     { className: "dsh-tm-keybar", role: "group", "aria-label": t("bar.label"), "data-terminal-mobile-keybar": true },
@@ -11424,6 +11428,7 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
         if (next) focusScreen(emulator);
       },
       onToggleKeyBar: () => uiState.setKeyBarEnabled(!prefs.keyBar.enabled),
+      onEditKeys: () => setEditorOpen(true),
       status,
       readOnly,
       retry,
@@ -11461,8 +11466,7 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
       t,
       prefs,
       ui: uiState,
-      onKey: sendKey,
-      onEdit: () => setEditorOpen(true)
+      onKey: sendKey
     }) : null,
     editorOpen ? React3.createElement(KeyEditor, {
       t,
@@ -11474,7 +11478,7 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
     }) : null
   );
 }
-function Toolbar({ ui: ui2, prefs, t, softKeyboard, onToggleSoftKeyboard, onToggleKeyBar, status, readOnly, retry, ended, onTakeControl, onReconnect, newTerminal }) {
+function Toolbar({ ui: ui2, prefs, t, softKeyboard, onToggleSoftKeyboard, onToggleKeyBar, onEditKeys, status, readOnly, retry, ended, onTakeControl, onReconnect, newTerminal }) {
   const pageMode = prefs.scrollMode === "page";
   return React3.createElement(
     "div",
@@ -11564,6 +11568,21 @@ function Toolbar({ ui: ui2, prefs, t, softKeyboard, onToggleSoftKeyboard, onTogg
           onClick: onToggleKeyBar
         },
         "\u2317"
+      ),
+      // The key editor, beside the keys it edits: a WORD, not an icon — its
+      // old ⌨ glyph was the same mark as the soft-keyboard toggle two buttons
+      // away, and at the end of the bar's last row nobody found it.
+      React3.createElement(
+        "button",
+        {
+          type: "button",
+          className: "dsh-tm-textbutton",
+          "aria-label": t("bar.edit"),
+          title: t("bar.edit"),
+          "data-terminal-mobile-action": "keybar-edit",
+          onClick: onEditKeys
+        },
+        t("bar.editShort")
       )
     ),
     status === void 0 ? null : React3.createElement("span", { className: "dsh-tm-status", role: "status" }, status)

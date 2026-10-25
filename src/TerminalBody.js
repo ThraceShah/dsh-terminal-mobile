@@ -137,6 +137,7 @@ export function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui })
         if (next) focusScreen(emulator)
       },
       onToggleKeyBar: () => uiState.setKeyBarEnabled(!prefs.keyBar.enabled),
+      onEditKeys: () => setEditorOpen(true),
       status,
       readOnly,
       retry,
@@ -178,7 +179,6 @@ export function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui })
           prefs,
           ui: uiState,
           onKey: sendKey,
-          onEdit: () => setEditorOpen(true),
         })
       : null,
     editorOpen
@@ -196,7 +196,7 @@ export function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui })
   )
 }
 
-function Toolbar({ ui, prefs, t, softKeyboard, onToggleSoftKeyboard, onToggleKeyBar, status, readOnly, retry, ended, onTakeControl, onReconnect, newTerminal }) {
+function Toolbar({ ui, prefs, t, softKeyboard, onToggleSoftKeyboard, onToggleKeyBar, onEditKeys, status, readOnly, retry, ended, onTakeControl, onReconnect, newTerminal }) {
   const pageMode = prefs.scrollMode === 'page'
   return React.createElement(
     'div',
@@ -286,6 +286,21 @@ function Toolbar({ ui, prefs, t, softKeyboard, onToggleSoftKeyboard, onToggleKey
           onClick: onToggleKeyBar,
         },
         '⌗',
+      ),
+      // The key editor, beside the keys it edits: a WORD, not an icon — its
+      // old ⌨ glyph was the same mark as the soft-keyboard toggle two buttons
+      // away, and at the end of the bar's last row nobody found it.
+      React.createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'dsh-tm-textbutton',
+          'aria-label': t('bar.edit'),
+          title: t('bar.edit'),
+          'data-terminal-mobile-action': 'keybar-edit',
+          onClick: onEditKeys,
+        },
+        t('bar.editShort'),
       ),
     ),
     status === undefined ? null : React.createElement('span', { className: 'dsh-tm-status', role: 'status' }, status),

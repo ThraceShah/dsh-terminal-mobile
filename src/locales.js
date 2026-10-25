@@ -42,6 +42,9 @@ export const zh = {
   hideBar: '隐藏扩展键栏',
   'bar.label': '扩展键栏',
   'bar.edit': '编辑扩展键',
+  // The toolbar button's visible text: the full label is wide for a control
+  // sitting among icon buttons, and the full one stays on its aria/title.
+  'bar.editShort': '编辑按键',
   'editor.title': '编辑扩展键',
   'editor.description': '点按选择要显示的按键；自定义键可发送任意转义序列。',
   'editor.close': '关闭',
@@ -143,6 +146,7 @@ export const en = {
   hideBar: 'Hide the extension key bar',
   'bar.label': 'Extension keys',
   'bar.edit': 'Edit extension keys',
+  'bar.editShort': 'Edit keys',
   'editor.title': 'Edit extension keys',
   'editor.description': 'Pick the keys to show; custom keys may send any escape sequence.',
   'editor.close': 'Close',

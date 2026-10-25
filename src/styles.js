@@ -158,7 +158,9 @@ const CSS = `
    it needs an explicit z-index to sit above xterm's canvas layers. */
 .dsh-tm-copychip {
   position: absolute;
-  z-index: 6;
+  /* Above the grips (7): the chip is the only way to COPY, and a grip whose
+     box overlaps it would win every tap in the overlap. */
+  z-index: 8;
   padding: 5px 12px;
   border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-sm);
@@ -269,12 +271,25 @@ const CSS = `
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 1px;
 }
-.dsh-tm-key--edit {
-  margin-left: auto;
-  min-width: 32px;
-  padding: 0 6px;
+/* A word among the toolbar's icons: same box as the iconbutton, but
+   wide enough for its label — the editor button says what it edits. */
+.dsh-tm-textbutton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
   color: var(--dsw-alias-label-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
 }
+.dsh-tm-textbutton:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
 /* The shared Modal card is a fixed-height flex column with overflow:hidden, so a
    long editor (45 builtin keys + many custom rows) pushes its own footer off a

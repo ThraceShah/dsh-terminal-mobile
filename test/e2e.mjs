@@ -54,7 +54,11 @@ try {
   for (const id of ['ctrl', 'alt', 'tab', 'esc', 'backspace', 'up', 'down', 'left', 'right', 'home', 'end', 'pipe', 'dash', 'tilde']) {
     suite.check(`the default bar shows ${id}`, keyIds.includes(id))
   }
-  suite.check('the bar has its editor entry', keyIds.includes('keybar-edit'))
+  // The editor entry lives in the TOOLBAR now: at the end of the bar's last
+  // row nobody found it, and its icon doubled the keyboard toggle's.
+  const editorEntry = await page.locator('[data-terminal-mobile-toolbar] [data-terminal-mobile-action="keybar-edit"]').count()
+  suite.equal('the toolbar has the editor entry', editorEntry, 1)
+  suite.check('the bar no longer ends with the editor', !keyIds.includes('keybar-edit'))
 
   // ── font size persists across a reload ─────────────────────────────────────
   await page.locator('[data-terminal-mobile-action="font-increase"]').click()

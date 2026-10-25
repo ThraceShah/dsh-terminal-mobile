@@ -19,14 +19,18 @@ import { builtinAriaLabel, builtinLabel, customAriaLabel, customLabel } from './
 
 /**
  * Render the bar.
+ *
+ * The editor entry does NOT live here: at the end of the last key row it sat
+ * where a thumb reaching for keys would miss it, and its icon doubled the
+ * toolbar's own keyboard toggle. It moved to the toolbar — see `Toolbar`.
+ *
  * @param {object} props
  * @param {(key: string) => string} props.t - namespace-bound translate.
  * @param {object} props.prefs - current preferences.
  * @param {object} props.ui - the injected ui-state module.
  * @param {(payload: string) => void} props.onKey - send decoded bytes.
- * @param {() => void} props.onEdit - open the key editor.
  */
-export function KeyBar({ t, prefs, ui, onKey, onEdit }) {
+export function KeyBar({ t, prefs, ui, onKey }) {
   const sticky = ui.sticky
   const armed = React.useSyncExternalStore(sticky.subscribe, sticky.getSnapshot, sticky.getSnapshot)
 
@@ -101,23 +105,6 @@ export function KeyBar({ t, prefs, ui, onKey, onEdit }) {
       ),
     )
   }
-
-  buttons.push(
-    React.createElement(
-      'button',
-      {
-        key: 'edit',
-        type: 'button',
-        className: 'dsh-tm-key dsh-tm-key--edit',
-        'aria-label': t('bar.edit'),
-        title: t('bar.edit'),
-        'data-terminal-mobile-action': 'keybar-edit',
-        onPointerDown: (event) => press(event, onEdit),
-        onClick: (event) => event.preventDefault(),
-      },
-      '⌨',
-    ),
-  )
 
   return React.createElement(
     'div',

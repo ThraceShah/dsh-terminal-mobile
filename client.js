@@ -71,6 +71,9 @@ var zh = {
   hideBar: "\u9690\u85CF\u6269\u5C55\u952E\u680F",
   "bar.label": "\u6269\u5C55\u952E\u680F",
   "bar.edit": "\u7F16\u8F91\u6269\u5C55\u952E",
+  // The toolbar button's visible text: the full label is wide for a control
+  // sitting among icon buttons, and the full one stays on its aria/title.
+  "bar.editShort": "\u7F16\u8F91\u6309\u952E",
   "editor.title": "\u7F16\u8F91\u6269\u5C55\u952E",
   "editor.description": "\u70B9\u6309\u9009\u62E9\u8981\u663E\u793A\u7684\u6309\u952E\uFF1B\u81EA\u5B9A\u4E49\u952E\u53EF\u53D1\u9001\u4EFB\u610F\u8F6C\u4E49\u5E8F\u5217\u3002",
   "editor.close": "\u5173\u95ED",
@@ -170,6 +173,7 @@ var en = {
   hideBar: "Hide the extension key bar",
   "bar.label": "Extension keys",
   "bar.edit": "Edit extension keys",
+  "bar.editShort": "Edit keys",
   "editor.title": "Edit extension keys",
   "editor.description": "Pick the keys to show; custom keys may send any escape sequence.",
   "editor.close": "Close",

@@ -199,9 +199,9 @@ export function cellFromPoint(node, cols, clientX, clientY, ydisp = 0, onMiss, c
  *   selection instead of freezing it.
  * - text past its own end keeps its geometric column — see
  *   `columnAtPointInRow`.
- * - the ROW changes only once the finger passes the middle of the destination
- *   row — see `rowWithHysteresis`. A hand cannot hold a row boundary; half a
- *   row of give is the redundancy it needs.
+ * - the ROW changes only once the finger travels most of the way through the
+ *   destination row — see `ROW_CHANGE_FRACTION`. A hand cannot hold a row
+ *   boundary; that much give is the redundancy it needs.
  *
  * The long-press path keeps the strict `cellFromPoint`: a press outside the
  * text should select nothing, not the nearest line.
@@ -254,10 +254,10 @@ export function cellForDrag(node, cols, clientX, clientY, ydisp = 0, cache, curr
  * sub-pixel twitch included. For a drag aimed along a line whose finger drifts
  * a few pixels down, that means the selection hops to the next row and back:
  * the highlight flickers between lines and a copy picks up a stray one. The
- * row therefore changes only once the finger passes the MIDDLE of the
- * destination row — half a row of give, symmetric for up and down, which is
- * the redundancy a hand holding a line actually needs. Short of the middle,
- * the drag is still on the row it came from.
+ * row therefore changes only once the finger travels most of the way through
+ * the destination row — see `ROW_CHANGE_FRACTION` — symmetric for up and
+ * down, which is the redundancy a hand holding a line actually needs. Short
+ * of that line, the drag is still on the row it came from.
  *
  * @param {HTMLElement} rows - the `.xterm-rows` container.
  * @param {{row: HTMLElement, index: number}} found - the row a plain lookup finds.
@@ -271,31 +271,53 @@ function rowWithHysteresis(rows, found, clientY, currentRow, ydisp, cache) {
   if (currentRow === undefined) return found.index
   const from = currentRow - ydisp
   if (from === found.index || from < 0 || from >= rows.childElementCount) return found.index
-  const mid = rowMidOf(rows, found.index, cache)
-  if (mid === undefined) return found.index
-  // Down: the destination row is entered past its middle. Up: left before it.
-  const entered = found.index > from ? clientY > mid : clientY < mid
+  const descending = found.index > from
+  const line = rowEntryLineOf(rows, found.index, descending, cache)
+  if (line === undefined) return found.index
+  const entered = descending ? clientY > line : clientY < line
   return entered ? found.index : from
 }
 
 /**
- * The vertical middle of a row, from the gesture's boxes when it has them.
+ * How far past the row boundary a finger must travel before the row changes.
+ *
+ * Half a row was the first setting. Against a real hand dragging forward
+ * while naturally sagging downward, it still changed rows too eagerly, so the
+ * give is now 70% LARGER than it was: 0.5 × 1.7 = 0.85 of the destination
+ * row's height.
+ */
+const ROW_CHANGE_FRACTION = 0.5 * 1.7 // 0.85
+
+/**
+ * The y at which a neighbouring row is entered, or `undefined` for a row with
+ * no height.
+ *
+ * The line is placed in the DESTINATION row, measured from the boundary being
+ * crossed: a drag coming from above must reach 85% down the row below before
+ * it commits to it; a drag coming from below must clear 85% of the row above
+ * measured upward from its bottom edge — its 15% line from the top. Both
+ * directions demand the same travel past the boundary; the mirror numbers are
+ * one rule read from opposite edges.
  *
  * @param {HTMLElement} rows
- * @param {number} index
+ * @param {number} index - the destination row's DOM index.
+ * @param {boolean} descending - entering the row from above (`true`) or below.
  * @param {ReturnType<typeof createMeasureCache>} [cache]
- * @returns {number | undefined} the midpoint, or `undefined` for a row with no height.
+ * @returns {number | undefined}
  */
-function rowMidOf(rows, index, cache) {
+function rowEntryLineOf(rows, index, descending, cache) {
+  let top
+  let height
   if (cache !== undefined && cache.container === rows && cache.tops.length === rows.childElementCount) {
-    const top = cache.tops[index]
-    const bottom = cache.bottoms[index]
-    if (bottom - top <= 0) return undefined
-    return (top + bottom) / 2
+    top = cache.tops[index]
+    height = cache.bottoms[index] - top
+  } else {
+    const box = rows.children[index].getBoundingClientRect()
+    top = box.top
+    height = box.height
   }
-  const box = rows.children[index].getBoundingClientRect()
-  if (box.height <= 0) return undefined
-  return box.top + box.height / 2
+  if (height <= 0) return undefined
+  return top + (descending ? ROW_CHANGE_FRACTION : 1 - ROW_CHANGE_FRACTION) * height
 }
 
 /**
@@ -918,10 +940,14 @@ export function installLongPressCopy(options) {
     const chipBox = chip.getBoundingClientRect()
     const x = box.left + (cell.column + 0.5) * box.cellWidth
     chip.style.left = `${Math.round(Math.min(Math.max(x - chipBox.width / 2, margin), Math.max(node.clientWidth - chipBox.width - margin, margin)))}px`
-    // Above the row when there is room, below it otherwise: a selection on the
-    // first visible row would push the chip off the top of the screen.
-    const above = box.top - chipBox.height - 6
-    chip.style.top = `${Math.round(above >= 0 ? above : box.top + box.height + 6)}px`
+    // Always ABOVE the row, clamped to the host's top edge. Flipping below
+    // for a top-row selection put the chip straight onto the start grip —
+    // same anchor column, grips a layer above the chip — and Copy became
+    // untappable. A floating menu overlapping the first line of text is what
+    // every other touch app does: the chip carries a solid background and
+    // sits on the top layer, and the grips live below the row, clear of it.
+    const above = Math.max(box.top - chipBox.height - 6, 2)
+    chip.style.top = `${Math.round(above)}px`
   }
 
   /**
