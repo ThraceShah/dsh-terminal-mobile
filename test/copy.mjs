@@ -113,9 +113,17 @@ try {
   // The chip copies on `pointerdown`, not `click`: acting on the down event is
   // what keeps the press usable while a finger is still on the glass, and it is
   // the same convention the extension key bar uses.
-  // ── a hold selects the word and shows the chip ───────────────────────────
-  const holdPoint = pointFor(4)
-  await page.evaluate(([p]) => {
+  // ── a hold between words offers Paste ────────────────────────────────────
+  // A phone keyboard without a clipboard strip would otherwise leave its user
+  // no way to paste at all. A hold that lands on a space selects nothing — and
+  // now offers the other clipboard direction instead of silently declining.
+  const pasteStrings = await import('../src/locales.js')
+  const pasteCopy = {
+    idle: new Set([pasteStrings.en['select.paste'], pasteStrings.zh['select.paste']]),
+    done: new Set([pasteStrings.en['select.pasted'], pasteStrings.zh['select.pasted']]),
+  }
+  await page.evaluate(() => navigator.clipboard.writeText('PASTED-BY-TEST').catch(() => {}))
+  const dispatchTouch = () => {
     window.__tmDispatch = (type, x, y) => {
       const screen = document.querySelector('[data-sidebar-terminal-screen]')
       const event = new Event(type, { bubbles: true, cancelable: true })
@@ -125,7 +133,49 @@ try {
       screen.dispatchEvent(event)
       return { prevented: event.defaultPrevented }
     }
-  }, [holdPoint])
+  }
+  await page.evaluate(dispatchTouch)
+  // The space before the marker, measured from the marker's own first glyph.
+  const gapPoint = { x: target.startLeft - target.pitch * 0.5, y: target.rowTop + target.rowHeight / 2 }
+  await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y), [gapPoint])
+  await page.waitForTimeout(700)
+  await page.evaluate(([p]) => window.__tmDispatch('touchend', p.x, p.y), [gapPoint])
+  await page.waitForTimeout(250)
+  const pasteHold = await page.evaluate(() => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    const screen = document.querySelector('[data-sidebar-terminal-screen]')
+    return { chip: chip === null ? null : chip.textContent, skip: screen.getAttribute('data-terminal-mobile-select-skip') }
+  })
+  suite.check('a hold between words offers Paste', pasteHold.chip !== null && pasteCopy.idle.has(pasteHold.chip), JSON.stringify(pasteHold))
+  suite.equal('the hold declines the selection itself', pasteHold.skip, 'word', JSON.stringify(pasteHold))
+
+  // Press the chip: the terminal must RECEIVE the text, which only the
+  // emulator's paste does — proven by the shell echoing it back.
+  await page.evaluate(() => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    chip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1 }))
+  })
+  await page.waitForTimeout(600)
+  const afterPaste = await page.evaluate(() => {
+    const rows = document.querySelector('.xterm-rows')
+    const echoed = [...rows.children].some((row) => (row.textContent ?? '').includes('PASTED-BY-TEST'))
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    return { echoed, chip: chip === null ? null : chip.textContent }
+  })
+  suite.check('pressing Paste puts the clipboard in the terminal', afterPaste.echoed, JSON.stringify(afterPaste))
+  suite.check('pasting confirms in place', afterPaste.chip !== null && pasteCopy.done.has(afterPaste.chip), JSON.stringify(afterPaste))
+  // The pasted text sits on the shell's input line. Clear it before anything
+  // else types — the next command would otherwise land in the middle of it.
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(500)
+  // The feedback chip retires on its own, like the copy chip's.
+  await page.waitForTimeout(1800)
+  const pasteRetired = await page.evaluate(() => document.querySelector('[data-terminal-mobile-copy]') === null)
+  suite.check('the Paste chip retires after confirming', pasteRetired)
+
+  // ── a hold selects the word and shows the chip ───────────────────────────
+  const holdPoint = pointFor(4)
+  await page.evaluate(dispatchTouch)
 
   await page.evaluate(([p]) => window.__tmDispatch('touchstart', p.x, p.y), [holdPoint])
   await page.waitForTimeout(700)
@@ -231,12 +281,22 @@ try {
 
   const grips = await page.evaluate((labels) => {
     const nodes = [...document.querySelectorAll('[data-terminal-mobile-handle]')]
-    return nodes.map((node) => ({
-      end: node.getAttribute('data-terminal-mobile-handle'),
-      aria: node.getAttribute('aria-label'),
-      box: node.getBoundingClientRect(),
-      hidden: node.getAttribute('aria-hidden'),
-    }))
+    return nodes.map((node) => {
+      const cs = getComputedStyle(node)
+      // The dot lives at the box's own origin plus these offsets, written by
+      // the module: the box is not symmetric around the dot — it reaches two
+      // cells toward the selected text and one row below it — so a dot
+      // measured as the box's centre would be a cell off.
+      const dotX = parseFloat(cs.getPropertyValue('--dsh-tm-dot-x'))
+      const dotY = parseFloat(cs.getPropertyValue('--dsh-tm-dot-y'))
+      return {
+        end: node.getAttribute('data-terminal-mobile-handle'),
+        aria: node.getAttribute('aria-label'),
+        box: node.getBoundingClientRect(),
+        hidden: node.getAttribute('aria-hidden'),
+        dot: { x: Number.isNaN(dotX) ? 22 : dotX, y: Number.isNaN(dotY) ? 22 : dotY },
+      }
+    })
   }, [en['select.handleStart'], zh['select.handleStart'], en['select.handleEnd'], zh['select.handleEnd']])
   suite.check('a selection shows exactly two grips', grips.length === 2, JSON.stringify(grips.map((grip) => grip.end)))
   suite.check('the grips are named for their own end', JSON.stringify(grips.map((grip) => grip.end)) === JSON.stringify(['start', 'end']), JSON.stringify(grips.map((grip) => grip.end)))
@@ -261,9 +321,11 @@ try {
   // the row's end, and the assertion fails against a placement that is exact.
   // Measuring the word's own first and last glyph keeps the check honest at
   // any width.
-  // The dot IS the press target: its centre is the grip box's centre, so the
-  // module's placement and this measurement share one origin.
-  const dotOf = (grip) => grip.box.left + grip.box.width / 2
+  // The dot lives at the box's left edge plus the module's offset: the box is
+  // not symmetric around the dot — it reaches two cells toward the selected
+  // text and a row below it — so measuring the dot as the box's centre would
+  // be a cell off.
+  const dotOf = (grip) => grip.box.left + grip.dot.x
   suite.check('the marker reports its own last glyph', target.finish !== undefined, JSON.stringify(target.finish))
   // Both comparisons are dot-centre against glyph-CENTRE. A dot sits on the
   // cell's centre — that is what makes it read as a grip for the cell it names
@@ -283,6 +345,29 @@ try {
     JSON.stringify({ dot: dotOf(grips[1]), last: lastCentre, marker: MARKER }),
   )
 
+  // Each grip reaches past its dot the way a native handle does: toward the
+  // selected text — the side AWAY from a screen edge, where Android's
+  // back-gesture strip would otherwise win the press — and below it, where a
+  // finger chasing a row boundary naturally falls. The reach is measured from
+  // the dot, past the 22px of ordinary slack, so it fails only if the two
+  // cells or the row go missing.
+  for (const grip of grips) {
+    const dotX = grip.box.left + grip.dot.x
+    const dotY = grip.box.top + grip.dot.y
+    const inward = grip.end === 'start' ? grip.box.right - dotX : dotX - grip.box.left
+    suite.check(
+      `the ${grip.end} grip reaches two cells toward the text`,
+      inward >= 22 + 2 * target.pitch - 1,
+      JSON.stringify({ inward, pitch: target.pitch }),
+    )
+    // 34px = 22px of slack below the dot plus a 12px row, rounding aside.
+    suite.check(
+      `the ${grip.end} grip reaches below its dot`,
+      grip.box.bottom - dotY >= 34,
+      JSON.stringify({ below: grip.box.bottom - dotY }),
+    )
+  }
+
   // ── dragging the end grip shrinks the selection ──────────────────────────
   // The grips are the point of the feature: a word selected by the hold is a
   // guess, and the user must be able to correct it to what they meant.
@@ -290,13 +375,13 @@ try {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {})
   const endGrip = grips[1]
   const pitch = target.pitch
-  const dragTo = await page.evaluate(([box, dotOffset, step]) => {
+  const dragTo = await page.evaluate(([box, dot, step]) => {
     const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
-    // Press on the DOT's centre, not on the 44px box's centre: the box is a
-    // finger-sized target around a 10px mark, and its centre is a half-cell to
-    // the right of the edge the grip names. `dotOffset` is measured from the
-    // box's left edge, so it already lands on the dot.
-    const at = { x: box.left + dotOffset, y: box.top + box.height / 2 }
+    // Press on the DOT's centre, not on the box's centre: the box reaches two
+    // cells toward the text and a row below, so its centre is well away from
+    // the mark — pressing there and then stepping "two cells" would actually
+    // move three.
+    const at = { x: box.left + dot.x, y: box.top + dot.y }
     const send = (type, x, y) => {
       const event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, clientX: x, clientY: y })
       grip.dispatchEvent(event)
@@ -307,7 +392,7 @@ try {
     const to = { x: at.x - step, y: at.y }
     send('pointermove', to.x, to.y)
     return { to }
-  }, [endGrip.box, endGrip.box.width / 2, pitch * 2])
+  }, [endGrip.box, endGrip.dot, pitch * 2])
 
   // ── mid-drag, the grip rides the raw pointer ──────────────────────────────
   // The selection can only snap to cells once per painted frame, so a fast
@@ -318,9 +403,13 @@ try {
   const midDrag = await page.evaluate(() => {
     const grip = document.querySelector('[data-terminal-mobile-handle="end"]')
     const box = grip.getBoundingClientRect()
-    // The end grip's dot sits 11px above its box's centre (the CSS lift), so
-    // the dot's own centre is what must land on the pointer.
-    return { dotX: box.left + box.width / 2, dotY: box.top + 11 }
+    // The dot sits at the box's origin plus the module's offsets, which the
+    // element publishes as custom properties: the box is deliberately not
+    // symmetric around the dot, so its centre is not the dot.
+    const cs = getComputedStyle(grip)
+    const dotX = parseFloat(cs.getPropertyValue('--dsh-tm-dot-x'))
+    const dotY = parseFloat(cs.getPropertyValue('--dsh-tm-dot-y'))
+    return { dotX: box.left + (Number.isNaN(dotX) ? 22 : dotX), dotY: box.top + (Number.isNaN(dotY) ? 22 : dotY) }
   })
   suite.check(
     'the dragged grip rides the raw pointer mid-drag',

@@ -137,7 +137,10 @@ var zh = {
   "select.copied": "\u5DF2\u590D\u5236",
   "select.copyFailed": "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u62E9",
   "select.handleStart": "\u8C03\u6574\u9009\u533A\u8D77\u70B9",
-  "select.handleEnd": "\u8C03\u6574\u9009\u533A\u7EC8\u70B9"
+  "select.handleEnd": "\u8C03\u6574\u9009\u533A\u7EC8\u70B9",
+  "select.paste": "\u7C98\u8D34",
+  "select.pasted": "\u5DF2\u7C98\u8D34",
+  "select.pasteFailed": "\u7C98\u8D34\u5931\u8D25\uFF0C\u526A\u8D34\u677F\u4E0D\u53EF\u8BFB"
 };
 var en = {
   title: "Terminal",
@@ -233,7 +236,10 @@ var en = {
   "select.copied": "Copied",
   "select.copyFailed": "Copy failed \u2014 select manually",
   "select.handleStart": "Adjust selection start",
-  "select.handleEnd": "Adjust selection end"
+  "select.handleEnd": "Adjust selection end",
+  "select.paste": "Paste",
+  "select.pasted": "Pasted",
+  "select.pasteFailed": "Paste failed \u2014 clipboard unreadable"
 };
 
 // src/ui-state.js

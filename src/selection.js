@@ -582,7 +582,7 @@ export async function writeToClipboard(text, env) {
  * @param {HTMLElement} options.node - the screen host that owns the gestures.
  * @param {import('@xterm/xterm').Terminal} options.emulator - the opened emulator.
  * @param {{selecting: boolean}} options.gesture - shared flag read by `installScrollOwnership`.
- * @param {() => {copy: string, copied: string, copyFailed: string, handleStart: string, handleEnd: string}} options.labels - current-locale chip and grip copy.
+ * @param {() => {copy: string, copied: string, copyFailed: string, handleStart: string, handleEnd: string, paste: string, pasted: string, pasteFailed: string}} options.labels - current-locale chip and grip copy.
  * @returns {{dispose: () => void}}
  */
 export function installLongPressCopy(options) {
@@ -590,6 +590,15 @@ export function installLongPressCopy(options) {
   let timer = 0
   let feedbackTimer = 0
   let chip
+  /**
+   * What the chip's press does: copy the selection, or paste the clipboard.
+   *
+   * One element for both, because a phone keyboard without a clipboard strip
+   * would otherwise leave its user no way to paste at all — a hold that lands
+   * between words offers the other clipboard direction instead of silently
+   * declining.
+   */
+  let chipAction = 'copy'
   /**
    * The current selection, as its two ends in buffer coordinates.
    *
@@ -761,7 +770,7 @@ export function installLongPressCopy(options) {
     range = undefined
   }
 
-  const showChip = (text) => {
+  const showChip = (text, action = 'copy') => {
     if (chip === undefined) {
       chip = document.createElement('button')
       chip.type = 'button'
@@ -771,6 +780,7 @@ export function installLongPressCopy(options) {
       node.appendChild(chip)
     }
     chip.textContent = text
+    chipAction = action
   }
 
   /**
@@ -804,6 +814,9 @@ export function installLongPressCopy(options) {
       top: hostBox.top,
       width: hostBox.width,
       cellWidth: gridBox.width / emulator.cols,
+      // The grips reach one row below their dot; a zero row (nothing painted
+      // yet) simply gives them their 44px and nothing more.
+      rowHeight: rows.children[0].getBoundingClientRect().height,
     }
     return cachedGeometry
   }
@@ -911,6 +924,21 @@ export function installLongPressCopy(options) {
     chip.style.top = `${Math.round(above >= 0 ? above : box.top + box.height + 6)}px`
   }
 
+  /**
+   * Retire the chip after the feedback window, whichever action produced it.
+   *
+   * The feedback chip carries the default `copy` action, which is inert
+   * without a selection — so a second press on "copied" or "pasted" cannot
+   * fire the action again while the feedback is on screen.
+   */
+  const scheduleFeedback = () => {
+    clearFeedback()
+    feedbackTimer = setTimeout(() => {
+      feedbackTimer = 0
+      dismiss()
+    }, FEEDBACK_MS)
+  }
+
   const copySelection = async () => {
     // Read before the await: the clipboard write suspends, and a press on the
     // screen can dismiss the selection in that gap. Re-reading afterwards would
@@ -924,11 +952,40 @@ export function installLongPressCopy(options) {
     if (!hasSelection()) return
     showChip(ok ? strings.copied : strings.copyFailed)
     placeChip(range.start)
-    clearFeedback()
-    feedbackTimer = setTimeout(() => {
-      feedbackTimer = 0
-      dismiss()
-    }, FEEDBACK_MS)
+    scheduleFeedback()
+  }
+
+  /**
+   * Put the clipboard into the terminal at the cursor.
+   *
+   * The read is the one part with no fallback: the write path can imitate a
+   * copy through a hidden textarea and execCommand, but no browser lets a
+   * page READ the clipboard except through the async API — and only in a
+   * secure context. On plain http over a LAN address the API is absent, and
+   * the honest answer is the failure chip rather than a silent nothing.
+   */
+  const pasteFromClipboard = async () => {
+    const strings = labels()
+    let text = ''
+    try {
+      text = (await navigator.clipboard.readText()) ?? ''
+    } catch {
+      text = ''
+    }
+    if (text === '') {
+      showChip(strings.pasteFailed)
+      scheduleFeedback()
+      return
+    }
+    try {
+      emulator.paste(text)
+    } catch {
+      showChip(strings.pasteFailed)
+      scheduleFeedback()
+      return
+    }
+    showChip(strings.pasted)
+    scheduleFeedback()
   }
 
   /**
@@ -1113,6 +1170,50 @@ export function installLongPressCopy(options) {
   }
 
   /**
+   * A grip's box around its dot.
+   *
+   * The dot is what the eye tracks, so the box is DERIVED from where the dot
+   * must be — never the other way round. The box itself reaches past the dot:
+   * 44px plus two cells toward the selected text and one full row below it,
+   * the area a native handle gives its user. The inward reach is what stays
+   * pressable when the dot itself has landed inside Android's back-gesture
+   * strip at a screen edge — a finger grabs the side of the grip that is
+   * AWAY from the edge — and the downward reach is where a finger naturally
+   * falls when chasing a grip that hangs at a row's boundary.
+   *
+   * @param {'start' | 'end'} end - which end this grip names.
+   * @param {number} dotX - the dot's centre, in host coordinates.
+   * @param {number} dotY - the dot's centre, in host coordinates.
+   * @param {number} cellWidth
+   * @param {number} rowHeight
+   * @returns {{left: number, top: number, width: number, height: number, dotX: number, dotY: number}}
+   */
+  const gripGeometry = (end, dotX, dotY, cellWidth, rowHeight) => {
+    // The start grip's text lies to its right, the end grip's to its left:
+    // the reach goes whichever way the selection is.
+    const reach = 2 * cellWidth
+    const inset = end === 'start' ? 0 : reach
+    return {
+      left: dotX - 22 - inset,
+      top: dotY - 22,
+      width: 44 + reach,
+      height: 44 + Math.max(rowHeight, 0),
+      dotX: 22 + inset,
+      dotY: 22,
+    }
+  }
+
+  /** Write a grip's geometry to its element — box and dot together. */
+  const writeGrip = (handle, geometry) => {
+    handle.style.left = `${Math.round(geometry.left)}px`
+    handle.style.top = `${Math.round(geometry.top)}px`
+    handle.style.width = `${Math.round(geometry.width)}px`
+    handle.style.height = `${Math.round(geometry.height)}px`
+    handle.style.setProperty('--dsh-tm-dot-x', `${Math.round(geometry.dotX)}px`)
+    handle.style.setProperty('--dsh-tm-dot-y', `${Math.round(geometry.dotY)}px`)
+  }
+
+  /**
    * Glue a handle to the raw pointer position, bypassing the cell grid.
    *
    * The cell pipeline can only apply once per painted frame, from a sample up
@@ -1134,12 +1235,9 @@ export function installLongPressCopy(options) {
   const followFinger = (handle, clientX, clientY) => {
     const geometry = hostGeometry()
     if (geometry === undefined) return
-    // The dot is centred at 50% of the 44px box: +11px from centre for a start
-    // grip hanging below its cell, -11px for an end grip above it (the CSS
-    // offsets), so the DOT lands on the pointer — not the box's centre.
-    const dotFromCentre = handle.getAttribute('data-terminal-mobile-handle') === 'start' ? 11 : -11
-    handle.style.left = `${Math.round(clientX - geometry.left - 22)}px`
-    handle.style.top = `${Math.round(clientY - geometry.top - 22 - dotFromCentre)}px`
+    const end = handle.getAttribute('data-terminal-mobile-handle') === 'start' ? 'start' : 'end'
+    // The DOT lands on the pointer; the box — reach and all — comes with it.
+    writeGrip(handle, gripGeometry(end, clientX - geometry.left, clientY - geometry.top, geometry.cellWidth, geometry.rowHeight))
   }
 
   const placeHandles = () => {
@@ -1162,14 +1260,14 @@ export function installLongPressCopy(options) {
         continue
       }
       handle.removeAttribute('aria-hidden')
-      // `box.left` is the grid's inset from the host edge: a column index is an
-      // offset from the grid, not from the host, so anchoring at zero put every
-      // grip a padding-width to the left of the glyph it names. The dot is
-      // centred in its 44px box, so half the box puts that centre on the cell
-      // boundary the grip names.
+      // The dot's place: the centre of the cell the grip names, at the row's
+      // edge — below it for the start grip, at its top for the end grip, the
+      // shapes a native selection uses. `box.left` is the grid's inset from
+      // the host edge: a column counts from the grid, not from the host.
       const column = index === 0 ? ends[index].column : endColumnOf(range)
-      handle.style.left = `${Math.round(box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth - 22)}px`
-      handle.style.top = `${Math.round(box.top - 10)}px`
+      const dotX = box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth
+      const dotY = box.top + (index === 0 ? 23 : 1)
+      writeGrip(handle, gripGeometry(index === 0 ? 'start' : 'end', dotX, dotY, box.cellWidth, box.height))
     }
   }
 
@@ -1179,6 +1277,10 @@ export function installLongPressCopy(options) {
     // mouse events) is what keeps the press from being swallowed.
     event.preventDefault()
     event.stopPropagation()
+    if (chipAction === 'paste') {
+      void pasteFromClipboard()
+      return
+    }
     void copySelection()
   }
 
@@ -1231,7 +1333,17 @@ export function installLongPressCopy(options) {
     const line = lineAt(bufferRow)
     if (line === undefined) return skip('line')
     const word = wordRangeAt(line, cell.column)
-    if (word === undefined) return skip('word')
+    if (word === undefined) {
+      // A hold between words selects nothing — and now offers the OTHER
+      // clipboard direction instead of silently declining: a phone whose
+      // keyboard has no clipboard strip would otherwise have no way to paste
+      // at all. `skip('word')` still records that nothing was selected; that
+      // is what the attribute means, and a test reads it.
+      skip('word')
+      showChip(labels().paste, 'paste')
+      placeChip(cell)
+      return
+    }
     try {
       emulator.select(word.start, bufferRow, word.end - word.start)
     } catch (error) {

@@ -9394,7 +9394,11 @@ var CSS = `
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 6px 8px;
+  /* 16px each side, not 8: a grip's dot on column 0 (or the last column) sits
+     that far from the screen edge, and Android's back-gesture strip eats
+     presses closer in. The grips reach inward as well \u2014 see the handles \u2014 but
+     the margin is what keeps the dot itself out of the strip. */
+  padding: 6px 16px;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-base);
   overflow: hidden;
@@ -9448,21 +9452,21 @@ var CSS = `
   outline-offset: 1px;
 }
 
-/* Selection handles: the two grips that grow or shrink a long-press selection.
-   The dot IS the press target \u2014 no larger invisible box sits around it \u2014 so
-   what the finger lands on and what the eye sees are the same 20px mark. A
-   separate 44px box would be easier to hit but places the visible dot 17px
-   away from where the finger presses, which reads as the selection lagging
-   behind the gesture; the dot is drawn at full size instead, and the browser's
-   own touch slop covers the rest.
-   The start grip hangs its dot below the grip point and the end grip above it,
-   as native text selection does: both marks then sit outside the highlighted
-   span they delimit, instead of half-overlapping the first and last cells.
-   The left and top offsets are written per handle by the module, so nothing
-   here positions them. */
+/* Selection handles: the dot is the visible mark, and the press target around
+   it is sized by the module \u2014 44px plus a reach toward the selected text and
+   one row below the dot, the area a native handle gives its user. On a phone
+   the dot itself can land inside Android's back-gesture strip at the screen
+   edge; the inward reach is what stays pressable when it does, which is why
+   the box is not symmetric around the dot.
+   The start grip hangs its dot below its row and the end grip at the top of
+   its own, as native text selection does: both marks clear the span they
+   delimit rather than half-overlapping its first and last cells.
+   Position, size and the dot's offset within the box are all written per
+   handle by the module, so nothing here positions them. */
 .dsh-tm-handle {
   position: absolute;
   z-index: 7;
+  /* The fallback until the module writes the reached-out size. */
   width: 44px;
   height: 44px;
   padding: 0;
@@ -9475,15 +9479,11 @@ var CSS = `
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-/* The dot is centred in its 44px target, so the press point and the visible
-   mark are the same place: a dot pinned to the box's edge puts 17px of
-   invisible box between the finger and the mark it appears to grab, which is
-   what made the grips feel detached from the selection. */
 .dsh-tm-handle::after {
   content: '';
   position: absolute;
-  left: 50%;
-  top: 50%;
+  left: var(--dsh-tm-dot-x, 50%);
+  top: var(--dsh-tm-dot-y, 50%);
   transform: translate(-50%, -50%);
   width: 10px;
   height: 10px;
@@ -9492,11 +9492,6 @@ var CSS = `
   background: var(--dsw-alias-brand-primary);
   box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
 }
-/* The start grip hangs its dot below the grip point, the end grip above it,
-   as native text selection does: both marks then clear the span they delimit
-   rather than sitting half over its first and last cell. */
-.dsh-tm-handle[data-end='start']::after { top: calc(50% + 11px); }
-.dsh-tm-handle[data-end='end']::after { top: calc(50% - 11px); }
 .dsh-tm-handle:active { cursor: grabbing; }
 .dsh-tm-handle:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
@@ -10190,6 +10185,7 @@ function installLongPressCopy(options) {
   let timer = 0;
   let feedbackTimer = 0;
   let chip;
+  let chipAction = "copy";
   let range;
   let handles;
   let handleDrag;
@@ -10275,7 +10271,7 @@ function installLongPressCopy(options) {
     removeHandles();
     range = void 0;
   };
-  const showChip = (text) => {
+  const showChip = (text, action = "copy") => {
     if (chip === void 0) {
       chip = document.createElement("button");
       chip.type = "button";
@@ -10285,6 +10281,7 @@ function installLongPressCopy(options) {
       node.appendChild(chip);
     }
     chip.textContent = text;
+    chipAction = action;
   };
   const hostGeometry = () => {
     if (cachedGeometry !== void 0) return cachedGeometry;
@@ -10299,7 +10296,10 @@ function installLongPressCopy(options) {
       gridLeft: gridBox.left,
       top: hostBox.top,
       width: hostBox.width,
-      cellWidth: gridBox.width / emulator.cols
+      cellWidth: gridBox.width / emulator.cols,
+      // The grips reach one row below their dot; a zero row (nothing painted
+      // yet) simply gives them their 44px and nothing more.
+      rowHeight: rows.children[0].getBoundingClientRect().height
     };
     return cachedGeometry;
   };
@@ -10352,6 +10352,13 @@ function installLongPressCopy(options) {
     const above = box.top - chipBox.height - 6;
     chip.style.top = `${Math.round(above >= 0 ? above : box.top + box.height + 6)}px`;
   };
+  const scheduleFeedback = () => {
+    clearFeedback();
+    feedbackTimer = setTimeout(() => {
+      feedbackTimer = 0;
+      dismiss();
+    }, FEEDBACK_MS);
+  };
   const copySelection = async () => {
     const text = emulator.getSelection();
     if (text === "") return;
@@ -10360,11 +10367,30 @@ function installLongPressCopy(options) {
     if (!hasSelection()) return;
     showChip(ok ? strings.copied : strings.copyFailed);
     placeChip(range.start);
-    clearFeedback();
-    feedbackTimer = setTimeout(() => {
-      feedbackTimer = 0;
-      dismiss();
-    }, FEEDBACK_MS);
+    scheduleFeedback();
+  };
+  const pasteFromClipboard = async () => {
+    const strings = labels();
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText() ?? "";
+    } catch {
+      text = "";
+    }
+    if (text === "") {
+      showChip(strings.pasteFailed);
+      scheduleFeedback();
+      return;
+    }
+    try {
+      emulator.paste(text);
+    } catch {
+      showChip(strings.pasteFailed);
+      scheduleFeedback();
+      return;
+    }
+    showChip(strings.pasted);
+    scheduleFeedback();
   };
   const gripCell = (column, bufferRow) => ({
     column: Math.min(Math.max(column, 0), Math.max(emulator.cols - 1, 0)),
@@ -10448,12 +10474,31 @@ function installLongPressCopy(options) {
     }
     placeHandles();
   };
+  const gripGeometry = (end, dotX, dotY, cellWidth, rowHeight) => {
+    const reach = 2 * cellWidth;
+    const inset = end === "start" ? 0 : reach;
+    return {
+      left: dotX - 22 - inset,
+      top: dotY - 22,
+      width: 44 + reach,
+      height: 44 + Math.max(rowHeight, 0),
+      dotX: 22 + inset,
+      dotY: 22
+    };
+  };
+  const writeGrip = (handle, geometry) => {
+    handle.style.left = `${Math.round(geometry.left)}px`;
+    handle.style.top = `${Math.round(geometry.top)}px`;
+    handle.style.width = `${Math.round(geometry.width)}px`;
+    handle.style.height = `${Math.round(geometry.height)}px`;
+    handle.style.setProperty("--dsh-tm-dot-x", `${Math.round(geometry.dotX)}px`);
+    handle.style.setProperty("--dsh-tm-dot-y", `${Math.round(geometry.dotY)}px`);
+  };
   const followFinger = (handle, clientX, clientY) => {
     const geometry = hostGeometry();
     if (geometry === void 0) return;
-    const dotFromCentre = handle.getAttribute("data-terminal-mobile-handle") === "start" ? 11 : -11;
-    handle.style.left = `${Math.round(clientX - geometry.left - 22)}px`;
-    handle.style.top = `${Math.round(clientY - geometry.top - 22 - dotFromCentre)}px`;
+    const end = handle.getAttribute("data-terminal-mobile-handle") === "start" ? "start" : "end";
+    writeGrip(handle, gripGeometry(end, clientX - geometry.left, clientY - geometry.top, geometry.cellWidth, geometry.rowHeight));
   };
   const placeHandles = () => {
     if (range === void 0 || handles === void 0) return;
@@ -10471,13 +10516,18 @@ function installLongPressCopy(options) {
       }
       handle.removeAttribute("aria-hidden");
       const column = index === 0 ? ends[index].column : endColumnOf(range);
-      handle.style.left = `${Math.round(box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth - 22)}px`;
-      handle.style.top = `${Math.round(box.top - 10)}px`;
+      const dotX = box.left + (column + (index === 0 ? 0.5 : -0.5)) * box.cellWidth;
+      const dotY = box.top + (index === 0 ? 23 : 1);
+      writeGrip(handle, gripGeometry(index === 0 ? "start" : "end", dotX, dotY, box.cellWidth, box.height));
     }
   };
   const onChipPress = (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (chipAction === "paste") {
+      void pasteFromClipboard();
+      return;
+    }
     void copySelection();
   };
   const skip = (reason) => {
@@ -10503,7 +10553,12 @@ function installLongPressCopy(options) {
     const line = lineAt(bufferRow);
     if (line === void 0) return skip("line");
     const word = wordRangeAt(line, cell.column);
-    if (word === void 0) return skip("word");
+    if (word === void 0) {
+      skip("word");
+      showChip(labels().paste, "paste");
+      placeChip(cell);
+      return;
+    }
     try {
       emulator.select(word.start, bufferRow, word.end - word.start);
     } catch (error) {
@@ -11394,7 +11449,10 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
         copied: t("select.copied"),
         copyFailed: t("select.copyFailed"),
         handleStart: t("select.handleStart"),
-        handleEnd: t("select.handleEnd")
+        handleEnd: t("select.handleEnd"),
+        paste: t("select.paste"),
+        pasted: t("select.pasted"),
+        pasteFailed: t("select.pasteFailed")
       }),
       onTap: () => focusScreen(emulatorRef.current)
     }),

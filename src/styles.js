@@ -123,7 +123,11 @@ const CSS = `
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 6px 8px;
+  /* 16px each side, not 8: a grip's dot on column 0 (or the last column) sits
+     that far from the screen edge, and Android's back-gesture strip eats
+     presses closer in. The grips reach inward as well — see the handles — but
+     the margin is what keeps the dot itself out of the strip. */
+  padding: 6px 16px;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-base);
   overflow: hidden;
@@ -177,21 +181,21 @@ const CSS = `
   outline-offset: 1px;
 }
 
-/* Selection handles: the two grips that grow or shrink a long-press selection.
-   The dot IS the press target — no larger invisible box sits around it — so
-   what the finger lands on and what the eye sees are the same 20px mark. A
-   separate 44px box would be easier to hit but places the visible dot 17px
-   away from where the finger presses, which reads as the selection lagging
-   behind the gesture; the dot is drawn at full size instead, and the browser's
-   own touch slop covers the rest.
-   The start grip hangs its dot below the grip point and the end grip above it,
-   as native text selection does: both marks then sit outside the highlighted
-   span they delimit, instead of half-overlapping the first and last cells.
-   The left and top offsets are written per handle by the module, so nothing
-   here positions them. */
+/* Selection handles: the dot is the visible mark, and the press target around
+   it is sized by the module — 44px plus a reach toward the selected text and
+   one row below the dot, the area a native handle gives its user. On a phone
+   the dot itself can land inside Android's back-gesture strip at the screen
+   edge; the inward reach is what stays pressable when it does, which is why
+   the box is not symmetric around the dot.
+   The start grip hangs its dot below its row and the end grip at the top of
+   its own, as native text selection does: both marks clear the span they
+   delimit rather than half-overlapping its first and last cells.
+   Position, size and the dot's offset within the box are all written per
+   handle by the module, so nothing here positions them. */
 .dsh-tm-handle {
   position: absolute;
   z-index: 7;
+  /* The fallback until the module writes the reached-out size. */
   width: 44px;
   height: 44px;
   padding: 0;
@@ -204,15 +208,11 @@ const CSS = `
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-/* The dot is centred in its 44px target, so the press point and the visible
-   mark are the same place: a dot pinned to the box's edge puts 17px of
-   invisible box between the finger and the mark it appears to grab, which is
-   what made the grips feel detached from the selection. */
 .dsh-tm-handle::after {
   content: '';
   position: absolute;
-  left: 50%;
-  top: 50%;
+  left: var(--dsh-tm-dot-x, 50%);
+  top: var(--dsh-tm-dot-y, 50%);
   transform: translate(-50%, -50%);
   width: 10px;
   height: 10px;
@@ -221,11 +221,6 @@ const CSS = `
   background: var(--dsw-alias-brand-primary);
   box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
 }
-/* The start grip hangs its dot below the grip point, the end grip above it,
-   as native text selection does: both marks then clear the span they delimit
-   rather than sitting half over its first and last cell. */
-.dsh-tm-handle[data-end='start']::after { top: calc(50% + 11px); }
-.dsh-tm-handle[data-end='end']::after { top: calc(50% - 11px); }
 .dsh-tm-handle:active { cursor: grabbing; }
 .dsh-tm-handle:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);

@@ -109,6 +109,9 @@ export const zh = {
   'select.copyFailed': '复制失败，请手动选择',
   'select.handleStart': '调整选区起点',
   'select.handleEnd': '调整选区终点',
+  'select.paste': '粘贴',
+  'select.pasted': '已粘贴',
+  'select.pasteFailed': '粘贴失败，剪贴板不可读',
 }
 
 /** English copy. */
@@ -207,4 +210,7 @@ export const en = {
   'select.copyFailed': 'Copy failed — select manually',
   'select.handleStart': 'Adjust selection start',
   'select.handleEnd': 'Adjust selection end',
+  'select.paste': 'Paste',
+  'select.pasted': 'Pasted',
+  'select.pasteFailed': 'Paste failed — clipboard unreadable',
 }
