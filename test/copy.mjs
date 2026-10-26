@@ -173,6 +173,38 @@ try {
   const pasteRetired = await page.evaluate(() => document.querySelector('[data-terminal-mobile-copy]') === null)
   suite.check('the Paste chip retires after confirming', pasteRetired)
 
+  // ── a hold on an EMPTY row offers Paste too ───────────────────────────────
+  // The most natural place to reach for paste is the blank space below the
+  // output — and the strict hit-test correctly finds no TEXT there, so the
+  // hold used to vanish with no trace at all. The clipboard direction now
+  // appears from the drag hit-test's nearest real cell, even where there is
+  // nothing to select, while the skip attribute still records why no
+  // selection was made. (The press mechanics are proven by the hold above;
+  // this pins the appearance.)
+  const blank = await page.evaluate(() => {
+    const rows = document.querySelector('.xterm-rows')
+    for (let i = 0; i < rows.childElementCount; i += 1) {
+      const row = rows.children[i]
+      if (row.textContent !== '') continue
+      const box = row.getBoundingClientRect()
+      if (box.height > 0) return { x: box.left + 60, y: (box.top + box.bottom) / 2 }
+    }
+    return undefined
+  })
+  suite.check('there is an empty row to hold on', blank !== undefined, JSON.stringify(blank))
+  await page.evaluate((p) => window.__tmDispatch('touchstart', p.x, p.y), blank)
+  await page.waitForTimeout(700)
+  await page.evaluate((p) => window.__tmDispatch('touchend', p.x, p.y), blank)
+  await page.waitForTimeout(250)
+  const blankHold = await page.evaluate(() => {
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    const screen = document.querySelector('[data-sidebar-terminal-screen]')
+    return { chip: chip === null ? null : chip.textContent, skip: screen.getAttribute('data-terminal-mobile-select-skip') }
+  })
+  suite.check('a hold on an empty row offers Paste', blankHold.chip !== null && pasteCopy.idle.has(blankHold.chip), JSON.stringify(blankHold))
+  suite.equal('the empty-row hold still records why nothing was selected', blankHold.skip, 'column', JSON.stringify(blankHold))
+  // The marker hold below dismisses this chip on its way, as any press would.
+
   // ── a hold selects the word and shows the chip ───────────────────────────
   const holdPoint = pointFor(4)
   await page.evaluate(dispatchTouch)

@@ -10585,21 +10585,31 @@ function installLongPressCopy(options) {
     );
     return typeof typed.ydisp === "number" ? typed.ydisp : buffer.baseY;
   };
+  const offerPaste = (cell) => {
+    showChip(labels().paste, "paste");
+    placeChip(cell);
+    return void 0;
+  };
   const fireLongPress = (touch) => {
     lastSkip = void 0;
     node.removeAttribute("data-terminal-mobile-select-skip");
     syncGestureCache();
     const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip, measureCache);
-    if (cell === void 0) return;
+    if (cell === void 0) {
+      const fallback = cellForDrag(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), measureCache);
+      if (fallback === void 0) return;
+      return offerPaste(fallback);
+    }
     const bufferRow = cell.bufferRow;
     const line = lineAt(bufferRow);
-    if (line === void 0) return skip("line");
+    if (line === void 0) {
+      skip("line");
+      return offerPaste(cell);
+    }
     const word = wordRangeAt(line, cell.column);
     if (word === void 0) {
       skip("word");
-      showChip(labels().paste, "paste");
-      placeChip(cell);
-      return;
+      return offerPaste(cell);
     }
     try {
       emulator.select(word.start, bufferRow, word.end - word.start);

@@ -1408,16 +1408,44 @@ export function installLongPressCopy(options) {
    * The word is the default the grips then adjust, so this is the one place a
    * selection is created rather than moved.
    */
+  /**
+   * Put the Paste chip on `cell` — the clipboard direction offered where a
+   * hold selected nothing. The chip is positioned at `cell`, not at a
+   * selection, because there isn't one.
+   *
+   * @param {{column: number, bufferRow: number}} cell
+   * @returns {undefined} for the caller's bare `return`.
+   */
+  const offerPaste = (cell) => {
+    showChip(labels().paste, 'paste')
+    placeChip(cell)
+    return undefined
+  }
+
   const fireLongPress = (touch) => {
     lastSkip = undefined
     node.removeAttribute('data-terminal-mobile-select-skip')
     // Output can arrive during the hold; the boxes are as fresh as the check.
     syncGestureCache()
     const cell = cellFromPoint(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), skip, measureCache)
-    if (cell === undefined) return
+    if (cell === undefined) {
+      // No TEXT under the finger: an empty row, the padding past a short
+      // line, blank space below the output — exactly where a user reaches to
+      // PASTE. Declining to SELECT is right (there is nothing to select), and
+      // `skip` has already named the guard; but a phone whose keyboard has no
+      // clipboard strip would have no way to paste at all if the hold simply
+      // vanished here. The drag hit-test answers with the nearest real cell
+      // even where the strict one, correctly, does not.
+      const fallback = cellForDrag(node, emulator.cols, touch.clientX, touch.clientY, ydisp(), measureCache)
+      if (fallback === undefined) return // no rows to anchor a chip on
+      return offerPaste(fallback)
+    }
     const bufferRow = cell.bufferRow
     const line = lineAt(bufferRow)
-    if (line === undefined) return skip('line')
+    if (line === undefined) {
+      skip('line')
+      return offerPaste(cell)
+    }
     const word = wordRangeAt(line, cell.column)
     if (word === undefined) {
       // A hold between words selects nothing — and now offers the OTHER
@@ -1426,9 +1454,7 @@ export function installLongPressCopy(options) {
       // at all. `skip('word')` still records that nothing was selected; that
       // is what the attribute means, and a test reads it.
       skip('word')
-      showChip(labels().paste, 'paste')
-      placeChip(cell)
-      return
+      return offerPaste(cell)
     }
     try {
       emulator.select(word.start, bufferRow, word.end - word.start)
