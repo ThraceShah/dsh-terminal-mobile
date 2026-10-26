@@ -604,7 +604,7 @@ export async function writeToClipboard(text, env) {
  * @param {HTMLElement} options.node - the screen host that owns the gestures.
  * @param {import('@xterm/xterm').Terminal} options.emulator - the opened emulator.
  * @param {{selecting: boolean}} options.gesture - shared flag read by `installScrollOwnership`.
- * @param {() => {copy: string, copied: string, copyFailed: string, handleStart: string, handleEnd: string, paste: string, pasted: string, pasteFailed: string}} options.labels - current-locale chip and grip copy.
+ * @param {() => {copy: string, copied: string, copyFailed: string, handleStart: string, handleEnd: string, paste: string, pasted: string, pasteFailed: string, pasteDenied: string}} options.labels - current-locale chip and grip copy.
  * @returns {{dispose: () => void}}
  */
 export function installLongPressCopy(options) {
@@ -1042,16 +1042,41 @@ export function installLongPressCopy(options) {
   }
 
   /**
-   * Put the clipboard into the terminal at the cursor.
+   * Put the clipboard into the terminal, where the press landed.
    *
    * The read is the one part with no fallback: the write path can imitate a
    * copy through a hidden textarea and execCommand, but no browser lets a
    * page READ the clipboard except through the async API — and only in a
-   * secure context. On plain http over a LAN address the API is absent, and
-   * the honest answer is the failure chip rather than a silent nothing.
+   * secure context. What that leaves on a phone is a permission prompt, and
+   * the prompt is fragile in ways the chip must survive:
+   *
+   * - Chrome refuses to show it while another app's overlay covers the
+   *   screen ("close all bubbles or overlays, then retry") — the read
+   *   rejects, and the honest chip says TAP TO RETRY and stays put until
+   *   the next press elsewhere, so the retry happens HERE instead of
+   *   forcing the whole hold again.
+   * - A single "block" makes Chrome deny forever without asking again; a
+   *   retry loop would then be a lie. The permission state is checked
+   *   first, and a denial says where the fix lives — site settings —
+   *   rather than just "failed".
    */
   const pasteFromClipboard = async () => {
     const strings = labels()
+    try {
+      const status = await navigator.permissions.query({ name: 'clipboard-read' })
+      if (status.state === 'denied') {
+        // Point at the setting, not at the tap — and keep the chip pressable
+        // anyway: every press re-queries the state, so fixing the site
+        // settings and tapping this chip pastes immediately, without another
+        // hold to find it again. (The read is never attempted while denied;
+        // Chrome would only reject it.)
+        showChip(strings.pasteDenied, 'paste')
+        return
+      }
+    } catch {
+      // No Permissions API for clipboard reads here (or a browser that does
+      // not know the name): proceed and let the read answer for itself.
+    }
     let text = ''
     try {
       text = (await navigator.clipboard.readText()) ?? ''
@@ -1059,15 +1084,16 @@ export function installLongPressCopy(options) {
       text = ''
     }
     if (text === '') {
-      showChip(strings.pasteFailed)
-      scheduleFeedback()
+      // Retryable AND persistent: the overlay that blocked the prompt may
+      // still be closing, and a chip that vanished after a second and a
+      // half would make the user hold again to find it.
+      showChip(strings.pasteFailed, 'paste')
       return
     }
     try {
       emulator.paste(text)
     } catch {
-      showChip(strings.pasteFailed)
-      scheduleFeedback()
+      showChip(strings.pasteFailed, 'paste')
       return
     }
     showChip(strings.pasted)

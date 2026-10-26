@@ -143,7 +143,8 @@ var zh = {
   "select.handleEnd": "\u8C03\u6574\u9009\u533A\u7EC8\u70B9",
   "select.paste": "\u7C98\u8D34",
   "select.pasted": "\u5DF2\u7C98\u8D34",
-  "select.pasteFailed": "\u7C98\u8D34\u5931\u8D25\uFF0C\u526A\u8D34\u677F\u4E0D\u53EF\u8BFB"
+  "select.pasteFailed": "\u7C98\u8D34\u5931\u8D25\uFF0C\u70B9\u6309\u91CD\u8BD5",
+  "select.pasteDenied": "\u526A\u8D34\u677F\u6743\u9650\u5DF2\u88AB\u62D2\u7EDD\uFF1A\u8BF7\u5728\u7AD9\u70B9\u8BBE\u7F6E\u4E2D\u5141\u8BB8"
 };
 var en = {
   title: "Terminal",
@@ -243,7 +244,8 @@ var en = {
   "select.handleEnd": "Adjust selection end",
   "select.paste": "Paste",
   "select.pasted": "Pasted",
-  "select.pasteFailed": "Paste failed \u2014 clipboard unreadable"
+  "select.pasteFailed": "Paste failed \u2014 tap to retry",
+  "select.pasteDenied": "Clipboard blocked \u2014 allow it in site settings"
 };
 
 // src/ui-state.js

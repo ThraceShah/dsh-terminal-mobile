@@ -167,6 +167,7 @@ export function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui })
         paste: t('select.paste'),
         pasted: t('select.pasted'),
         pasteFailed: t('select.pasteFailed'),
+        pasteDenied: t('select.pasteDenied'),
       }),
       onTap: () => focusScreen(emulatorRef.current),
     }),

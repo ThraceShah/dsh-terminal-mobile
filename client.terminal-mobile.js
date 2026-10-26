@@ -10413,6 +10413,14 @@ function installLongPressCopy(options) {
   };
   const pasteFromClipboard = async () => {
     const strings = labels();
+    try {
+      const status = await navigator.permissions.query({ name: "clipboard-read" });
+      if (status.state === "denied") {
+        showChip(strings.pasteDenied, "paste");
+        return;
+      }
+    } catch {
+    }
     let text = "";
     try {
       text = await navigator.clipboard.readText() ?? "";
@@ -10420,15 +10428,13 @@ function installLongPressCopy(options) {
       text = "";
     }
     if (text === "") {
-      showChip(strings.pasteFailed);
-      scheduleFeedback();
+      showChip(strings.pasteFailed, "paste");
       return;
     }
     try {
       emulator.paste(text);
     } catch {
-      showChip(strings.pasteFailed);
-      scheduleFeedback();
+      showChip(strings.pasteFailed, "paste");
       return;
     }
     showChip(strings.pasted);
@@ -11489,7 +11495,8 @@ function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t, ui: ui2 }) {
         handleEnd: t("select.handleEnd"),
         paste: t("select.paste"),
         pasted: t("select.pasted"),
-        pasteFailed: t("select.pasteFailed")
+        pasteFailed: t("select.pasteFailed"),
+        pasteDenied: t("select.pasteDenied")
       }),
       onTap: () => focusScreen(emulatorRef.current)
     }),

@@ -114,7 +114,8 @@ export const zh = {
   'select.handleEnd': '调整选区终点',
   'select.paste': '粘贴',
   'select.pasted': '已粘贴',
-  'select.pasteFailed': '粘贴失败，剪贴板不可读',
+  'select.pasteFailed': '粘贴失败，点按重试',
+  'select.pasteDenied': '剪贴板权限已被拒绝：请在站点设置中允许',
 }
 
 /** English copy. */
@@ -216,5 +217,6 @@ export const en = {
   'select.handleEnd': 'Adjust selection end',
   'select.paste': 'Paste',
   'select.pasted': 'Pasted',
-  'select.pasteFailed': 'Paste failed — clipboard unreadable',
+  'select.pasteFailed': 'Paste failed — tap to retry',
+  'select.pasteDenied': 'Clipboard blocked — allow it in site settings',
 }

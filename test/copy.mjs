@@ -121,6 +121,8 @@ try {
   const pasteCopy = {
     idle: new Set([pasteStrings.en['select.paste'], pasteStrings.zh['select.paste']]),
     done: new Set([pasteStrings.en['select.pasted'], pasteStrings.zh['select.pasted']]),
+    failed: new Set([pasteStrings.en['select.pasteFailed'], pasteStrings.zh['select.pasteFailed']]),
+    denied: new Set([pasteStrings.en['select.pasteDenied'], pasteStrings.zh['select.pasteDenied']]),
   }
   await page.evaluate(() => navigator.clipboard.writeText('PASTED-BY-TEST').catch(() => {}))
   const dispatchTouch = () => {
@@ -203,6 +205,82 @@ try {
   })
   suite.check('a hold on an empty row offers Paste', blankHold.chip !== null && pasteCopy.idle.has(blankHold.chip), JSON.stringify(blankHold))
   suite.equal('the empty-row hold still records why nothing was selected', blankHold.skip, 'column', JSON.stringify(blankHold))
+
+  // ── a blocked clipboard read is retryable in place ────────────────────────
+  // On a phone the read runs through Chrome's permission prompt, and the
+  // prompt refuses to appear while another app's overlay covers the screen —
+  // real bug, real screenshots. The failure chip must say TAP TO RETRY and
+  // SURVIVE its own press, so recovering is a tap, not another hold.
+  await page.evaluate(() => {
+    window.__reads = 0
+    window.__realQuery = navigator.permissions.query.bind(navigator.permissions)
+    window.__realRead = navigator.clipboard.readText.bind(navigator.clipboard)
+    navigator.clipboard.readText = () => {
+      window.__reads += 1
+      return Promise.reject(new DOMException('overlay covers the prompt', 'NotAllowedError'))
+    }
+  })
+  const pressChip = () =>
+    page.evaluate(() => {
+      const chip = document.querySelector('[data-terminal-mobile-copy]')
+      chip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1 }))
+    })
+  await pressChip()
+  await page.waitForTimeout(400)
+  const blocked = await page.evaluate(() => ({
+    chip: document.querySelector('[data-terminal-mobile-copy]')?.textContent ?? null,
+    reads: window.__reads,
+  }))
+  suite.check('a blocked clipboard read offers a retryable chip', blocked.chip !== null && pasteCopy.failed.has(blocked.chip), JSON.stringify(blocked))
+  await pressChip()
+  await page.waitForTimeout(400)
+  const retried = await page.evaluate(() => ({ reads: window.__reads }))
+  suite.equal('the failure chip retries on its own press', retried.reads, 2, JSON.stringify(retried))
+
+  // A past "block" makes Chrome deny forever without asking; the chip must
+  // say where the fix lives instead of inviting another pointless retry —
+  // and it must not even attempt the read.
+  await page.evaluate(() => {
+    navigator.permissions.query = () => Promise.resolve({ state: 'denied' })
+    navigator.clipboard.readText = () => {
+      window.__reads += 1
+      return Promise.resolve('SHOULD-NOT-BE-READ')
+    }
+  })
+  await pressChip()
+  await page.waitForTimeout(400)
+  const denied = await page.evaluate(() => ({
+    chip: document.querySelector('[data-terminal-mobile-copy]')?.textContent ?? null,
+    reads: window.__reads,
+  }))
+  suite.check('a denied permission points at site settings', denied.chip !== null && pasteCopy.denied.has(denied.chip), JSON.stringify(denied))
+  suite.equal('the denied chip does not even try to read', denied.reads, 2, JSON.stringify(denied))
+
+  // Overlay gone, permission fine: the same chip pastes for real.
+  await page.evaluate(() => {
+    navigator.permissions.query = window.__realQuery
+    navigator.clipboard.readText = () => Promise.resolve('RECOVERED-BY-TEST')
+  })
+  await pressChip()
+  await page.waitForTimeout(500)
+  const recovered = await page.evaluate(async () => {
+    const rows = document.querySelector('.xterm-rows')
+    const echoed = [...rows.children].some((row) => (row.textContent ?? '').includes('RECOVERED-BY-TEST'))
+    const chip = document.querySelector('[data-terminal-mobile-copy]')
+    return { echoed, chip: chip === null ? null : chip.textContent }
+  })
+  suite.check('the retry pastes once the overlay is gone', recovered.echoed, JSON.stringify(recovered))
+  suite.check('the successful paste confirms in place', recovered.chip !== null && pasteCopy.done.has(recovered.chip), JSON.stringify(recovered))
+  // Put the real clipboard APIs back: every later assertion reads the
+  // clipboard to verify a COPY, and the stub would answer for it.
+  await page.evaluate(() => {
+    navigator.permissions.query = window.__realQuery
+    navigator.clipboard.readText = window.__realRead
+  })
+  // Clear the shell input the recovery pasted, before anything else types.
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(500)
+
   // The marker hold below dismisses this chip on its way, as any press would.
 
   // ── a hold selects the word and shows the chip ───────────────────────────
